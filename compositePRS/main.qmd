@@ -1,0 +1,187 @@
+---
+title: "combined_adgc_composite_individual_figure"
+format: html
+---
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+
+theme_set(theme_bw(base_size = 12))
+
+composite_rds_dir <- "/wynton/group/andrews/users/rakshyasharma/PRS/compositePRS/results/rds"
+individual_rds_dir <- "/wynton/group/andrews/users/rakshyasharma/PRS/IndividualPRS/ADGC/results/rds"
+
+plain_results <- readRDS(file.path(composite_rds_dir, "plain_results.rds"))
+all_results   <- readRDS(file.path(individual_rds_dir, "adgc_individual_prs_results.rds"))
+
+trait_labels <- c(
+  "Graham2021tc_eur" = "Total Cholesterol",
+  "Graham2021TG_eur" = "Triglycerides",
+  "Graham2021HDL_eur" = "HDL Cholesterol",
+  "Graham2021LDL_eur" = "LDL Cholesterol",
+  "Keaton2024diaBP" = "Diastolic Blood Pressure",
+  "Keaton2024PP" = "Pulse Pressure",
+  "Keaton2024sysBP" = "Systolic Blood Pressure",
+  "Okbay2022educ" = "Education",
+  "SaundersDrnkwk" = "Alcohol Consumption (weekly)",
+  "SaundersSmkInt" = "Smoking Initiation",
+  "SuzukiDia2024" = "Type 2 Diabetes",
+  "YengoBMI2018" = "BMI",
+  "Socrates2024" = "Social Isolation",
+  "Trpchevska2022" = "Hearing Loss",
+  "Choquet2021" = "Vision Loss",
+  "Klimentidis2018mvpa" = "Physical Activity",
+  "Adams2025mdd" = "Major Depression"
+)
+# Ensure ADGC individual PRS rows carry FDR-adjusted values
+individual_results_fdr <- all_results %>%
+  group_by(sex_strata) %>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+# Apply the same FDR logic to composite PRS plain-logistic rows:
+# one FDR family within Total/Female/Male, matching the ADGC workflow style
+plain_results_fdr <- plain_results %>%
+  group_by(sex_strata) %>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+trait_order <- individual_results_fdr %>%
+  filter(sex_strata == "Total") %>%
+  arrange(estimate_or) %>%
+  pull(folder)
+
+trait_order_labels <- unname(trait_labels[trait_order])
+
+individual_plot_df <- individual_results_fdr %>%
+  mutate(
+    label = trait_labels[folder],
+    label = factor(label, levels = c(trait_order_labels, "Composite PRS")),
+    group = case_when(
+      sex_strata == "Total"  ~ "Total",
+      sex_strata == "Female" ~ "Female",
+      sex_strata == "Male"   ~ "Male",
+      TRUE ~ sex_strata
+    )
+  ) %>%
+  select(group, label, estimate_or, conf.low_or, conf.high_or, p.value, p_adj_fdr)
+
+composite_plot_df <- plain_results_fdr %>%
+  mutate(
+    label = factor("Composite PRS", levels = c(trait_order_labels, "Composite PRS")),
+    estimate_or = estimate,
+    conf.low_or = conf.low,
+    conf.high_or = conf.high,
+    group = case_when(
+      sex_strata == "Total"  ~ "Total",
+      sex_strata == "Female" ~ "Female",
+      sex_strata == "Male"   ~ "Male",
+      TRUE ~ sex_strata
+    )
+  ) %>%
+  select(group, label, estimate_or, conf.low_or, conf.high_or, p.value, p_adj_fdr)
+
+plot_df <- bind_rows(individual_plot_df, composite_plot_df) %>%
+  mutate(
+    group = factor(group, levels = c("Total", "Female", "Male")),
+
+    # Stars use nominal/raw p-values, not FDR
+    signif = case_when(
+      !is.na(p.value) & p.value < 0.001 ~ "***",
+      !is.na(p.value) & p.value < 0.01  ~ "**",
+      !is.na(p.value) & p.value < 0.05  ~ "*",
+      TRUE ~ ""
+    ),
+
+    # Transparency also follows nominal/raw p-values
+    sig_alpha = if_else(
+      !is.na(p.value) & p.value < 0.05,
+      "significant",
+      "non-significant"
+    ),
+
+    star_vjust = case_when(
+      group == "Total"  ~ -0.4,
+      group == "Female" ~ -0.4,
+      group == "Male"   ~ -0.6,
+      TRUE ~ 0
+    )
+  )
+
+xmin <- min(plot_df$conf.low_or, na.rm = TRUE) * 0.98
+xmax <- max(plot_df$conf.high_or, na.rm = TRUE) * 1.05
+pd <- position_dodge(width = 0.8)
+plot_df %>%
+  filter(label == "Composite PRS") %>%
+  select(group, p.value, p_adj_fdr, estimate_or, conf.low_or, conf.high_or)
+
+p_combined <- ggplot(
+  plot_df,
+  aes(
+    x = label,
+    y = estimate_or,
+    ymin = conf.low_or,
+    ymax = conf.high_or,
+    color = group,
+    shape = group,
+    alpha = sig_alpha
+  )
+) +
+  geom_hline(yintercept = 1, linetype = "dashed", linewidth = 0.6, color = "black") +
+  geom_pointrange(
+    position = pd,
+    size = 0.6
+  ) +
+  geom_text(
+    aes(label = signif, vjust = star_vjust),
+    position = pd,
+    size = 3.6,
+    show.legend = FALSE,
+    na.rm = TRUE
+  ) +
+  coord_flip(clip = "off") +
+  scale_y_continuous(limits = c(xmin, xmax)) +
+  scale_alpha_manual(
+    values = c("significant" = 1, "non-significant" = 0.28),
+    guide = "none"
+  ) +
+  scale_color_manual(values = c(
+    "Total" = "black",
+    "Female" = "deeppink",
+    "Male" = "blue"
+  )) +
+  scale_shape_manual(values = c(
+    "Total" = 15,
+    "Female" = 16,
+    "Male" = 17
+  )) +
+  labs(
+    x = NULL,
+    y = "Odds Ratio (95% CI)",
+    color = NULL,
+    shape = NULL
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 11),
+    axis.title.x = element_text(size = 12),
+    legend.position = "bottom",
+    plot.margin = margin(10, 35, 10, 10)
+  )
+
+p_combined
+
+
+fig_dir <- "/wynton/group/andrews/users/rakshyasharma/PRS/compositePRS/results/figures"
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = file.path(fig_dir, "combined_composite_individual_singlepanel.png"),
+  plot = p_combined,
+  width = 10,
+  height = 14,
+  dpi = 300
+)
+```

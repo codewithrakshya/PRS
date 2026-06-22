@@ -1,0 +1,28 @@
+Step 1. Build the master HABS-HD dataset
+
+Scriptbuild/build_habshd_master_dataset.qmd
+
+PurposeCreates the canonical merged HABS-HD dataset by combining:
+
+genotype sample IDs from the FAM file
+
+ancestry / population similarity and PCs
+
+clinical variables
+
+genomics variables including APOE4
+
+medication variables
+
+PRS score files from selected trait folders
+
+biomarker data
+
+Key helper codeR/habshd_master_data.R
+
+Primary outputshared_data/habshd_master_df.rds
+
+InterpretationThis is the single source-of-truth cohort object for downstream HABS-HD PRS analyses.
+
+Step 2.Run the composite PRS pipeline:
+/wynton/group/andrews/users/rakshyasharma//wynton/group/andrews/users/rakshyasharma/PRS/compositePRS/compositePRS.qmd

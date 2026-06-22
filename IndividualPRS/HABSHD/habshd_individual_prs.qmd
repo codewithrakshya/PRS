@@ -1,0 +1,628 @@
+---
+title: "habshd_individual_prs"
+subtitle: "Which individual PRSs associate with cognitive impairment?"
+format: html
+---
+## Setup
+
+main input 
+master_rds <- "/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds"
+
+required input columns 
+IID
+cognitive_impairment
+ID_Gender
+Age
+Race
+APOE4_Positivity
+PC1, PC2, PC3, PC4
+
+Medication variables:
+taking_cholesterol_meds
+taking_diabetes_meds
+taking_hypertension_meds
+
+Clinical / phenotype variables:
+BW_CholTotal
+BW_LDLchol
+BW_HDLChol
+BW_Triglycerides
+BW_HbA1c
+OM_BMI
+OM_BP_DIA
+OM_BP_SYS
+Pulse_Pressure
+CDX_Depression
+CDX_Hypertension
+CDX_Diabetes
+AUDIT_Total
+SocialSupport_Total
+IMH_TBI
+Smoke
+Vision_Loss
+Hearing_Loss
+GDS_Category
+
+PRS variables:
+bmi_score
+education_score
+alcohol_drinking_weekly_score
+smoking_initiation_score
+diabetes_score
+diastolic_blood_pressure_score
+systolic_blood_pressure_score
+pulse_pressure_score
+total_cholesterol_score
+social_isolation_score
+Hearing_Loss_score
+Vision_Loss_score
+Triglycerides_score
+HDL_Cholesterol_score
+LDL_Cholesterol_score
+Physical_Activity_score
+Major_Depressive_Disorder_score
+
+cognitive_impairment ~ PRS + Age + APOE4_Positivity + PC1 + PC2 + PC3 + PC4 + Race
+
+(ID_gender) for total model
+
+output
+
+results/
+├── rds/
+│   ├── habshd_individual_prs_analytic_dataset.rds
+│   ├── habshd_individual_prs_results.rds
+│   └── habshd_individual_prs_sample_sizes.rds
+│
+├── tables/
+│   ├── habshd_individual_prs_baseline_table1.docx
+│   ├── habshd_individual_prs_baseline_table1.rtf
+│   ├── habshd_individual_prs_baseline_table1.html
+│   ├── habshd_individual_prs_results.csv
+│   ├── habshd_individual_prs_results.html
+│   ├── habshd_individual_prs_sample_sizes.csv
+│   ├── habshd_individual_prs_sample_sizes.html
+│   └── habshd_individual_prs_results.xlsx
+│
+└── figures/
+    ├── habshd_individual_prs_total.png
+    └── habshd_individual_prs_by_sex.png
+
+```{r setup}
+.libPaths("/wynton/home/andrews/rakshyasharma/R/rocky8-x86_64-pc-linux-gnu-library/4.4-CBI-gcc13/")
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+library(ggplot2)
+library(gt)
+library(gtsummary)
+library(data.table)
+library(readxl)
+library(stringr)
+library(flextable)
+library(openxlsx)
+
+options(dplyr.summarise.inform = FALSE)
+theme_set(theme_minimal(base_size = 12, base_family = "Arial"))
+```
+## Inputs
+
+
+```{r inputs}
+master_rds <- "/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds"
+
+out_dir <- "results"
+out_fig_dir <- file.path(out_dir, "figures")
+out_tbl_dir <- file.path(out_dir, "tables")
+out_rds_dir <- file.path(out_dir, "rds")
+
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_tbl_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_rds_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Helper functions
+
+```{r helpers}
+check_required_columns <- function(df, required_cols) {
+  missing_cols <- setdiff(required_cols, names(df))
+  if (length(missing_cols) > 0) {
+    stop(
+      paste(
+        "The master dataset is missing required columns:",
+        paste(missing_cols, collapse = ", ")
+      )
+    )
+  }
+}
+```
+## Load master dataset
+
+```{r analytic-dataset}
+final_df <- readRDS(master_rds) %>%
+  dplyr::mutate(
+    IID = as.character(IID),
+    APOE4_Positivity = as.integer(APOE4_Positivity),
+    APOE4_Positivity = ifelse(APOE4_Positivity %in% c(0, 1), APOE4_Positivity, NA_integer_),
+    Sex = factor(ID_Gender, levels = c(0, 1), labels = c("Male", "Female")),
+    RAPA_1_Scores = ifelse(RAPA_1_Total > 6, "High Score", "Low Score"),
+    RAPA_2_Scores = ifelse(RAPA_2_Total > 2, "High Score", "Low Score")
+  ) %>%
+  dplyr::filter(!is.na(APOE4_Positivity))
+  
+required_cols <- c(
+  "IID", "cognitive_impairment", "ID_Gender", "Sex", "Age", "Race",
+  "APOE4_Positivity", "PC1", "PC2", "PC3", "PC4",
+  "taking_cholesterol_meds", "taking_diabetes_meds", "taking_hypertension_meds",
+  "BW_CholTotal", "BW_LDLchol", "BW_HDLChol", "BW_Triglycerides", "BW_HbA1c",
+  "OM_BMI", "OM_BP_DIA", "OM_BP_SYS", "Pulse_Pressure",
+  "CDX_Depression", "CDX_Hypertension", "CDX_Diabetes",
+  "AUDIT_Total", "SocialSupport_Total", "IMH_TBI",
+  "Smoke", "Vision_Loss", "Hearing_Loss",
+  "RAPA_1_Scores", "RAPA_2_Scores", "GDS_Category",
+  "bmi_score", "education_score", "alcohol_drinking_weekly_score",
+  "smoking_initiation_score", "diabetes_score",
+  "diastolic_blood_pressure_score", "systolic_blood_pressure_score",
+  "pulse_pressure_score", "total_cholesterol_score",
+  "social_isolation_score", "Hearing_Loss_score", "Vision_Loss_score",
+  "Triglycerides_score", "HDL_Cholesterol_score", "LDL_Cholesterol_score",
+  "Physical_Activity_score", "Major_Depressive_Disorder_score"
+)
+
+check_required_columns(final_df, required_cols)
+
+cat("Analytic dataset rows:", nrow(final_df), "\n")
+cat("Analytic dataset columns:", ncol(final_df), "\n")
+cat("Cognitive impairment counts:\n")
+print(table(final_df$cognitive_impairment, useNA = "ifany"))
+cat("Sex by cognitive impairment:\n")
+print(table(final_df$Sex, final_df$cognitive_impairment, useNA = "ifany"))
+```
+
+## Individual PRS association models
+
+```{r individual-prs-models}
+prs_vars <- c(
+  "bmi_score",
+  "education_score",
+  "alcohol_drinking_weekly_score",
+  "smoking_initiation_score",
+  "diabetes_score",
+  "diastolic_blood_pressure_score",
+  "systolic_blood_pressure_score",
+  "pulse_pressure_score",
+  "total_cholesterol_score",
+  "social_isolation_score",
+  "Hearing_Loss_score",
+  "Vision_Loss_score",
+  "Triglycerides_score",
+  "HDL_Cholesterol_score",
+  "LDL_Cholesterol_score",
+  "Physical_Activity_score",
+  "Major_Depressive_Disorder_score"
+)
+
+prs_label_map <- c(
+  "bmi_score" = "BMI",
+  "education_score" = "Education",
+  "alcohol_drinking_weekly_score" = "Alcohol Consumption (weekly)",
+  "smoking_initiation_score" = "Smoking Initiation",
+  "diabetes_score" = "Type 2 Diabetes",
+  "diastolic_blood_pressure_score" = "Diastolic Blood Pressure",
+  "systolic_blood_pressure_score" = "Systolic Blood Pressure",
+  "pulse_pressure_score" = "Pulse Pressure",
+  "total_cholesterol_score" = "Total Cholesterol",
+  "social_isolation_score" = "Social Isolation",
+  "Hearing_Loss_score" = "Hearing Loss",
+  "Vision_Loss_score" = "Vision Loss",
+  "Triglycerides_score" = "Triglycerides",
+  "HDL_Cholesterol_score" = "HDL Cholesterol",
+  "LDL_Cholesterol_score" = "LDL Cholesterol",
+  "Physical_Activity_score" = "Physical Activity",
+  "Major_Depressive_Disorder_score" = "Major Depressive Disorder"
+)
+
+fit_habs_prs <- function(data, prs_var, sex_group = "Total", include_sex = TRUE) {
+  covars <- c("Age", "APOE4_Positivity", "PC1", "PC2", "PC3", "PC4", "Race")
+  if (include_sex) covars <- c(covars, "ID_Gender")
+
+  form <- as.formula(
+    paste("cognitive_impairment ~", paste(c(prs_var, covars), collapse = " + "))
+  )
+
+  fit <- glm(form, data = data, family = binomial())
+
+  coef_tab <- summary(fit)$coefficients
+  zval <- qnorm(0.975)
+
+  if (!(prs_var %in% rownames(coef_tab))) {
+    return(tibble(
+      prs_var = prs_var,
+      sex_strata = sex_group,
+      estimate = NA_real_,
+      std.error = NA_real_,
+      statistic = NA_real_,
+      p.value = NA_real_,
+      conf.low = NA_real_,
+      conf.high = NA_real_,
+      estimate_or = NA_real_,
+      conf.low_or = NA_real_,
+      conf.high_or = NA_real_
+    ))
+  }
+
+  beta <- coef_tab[prs_var, "Estimate"]
+  se <- coef_tab[prs_var, "Std. Error"]
+
+  tibble(
+    prs_var = prs_var,
+    sex_strata = sex_group,
+    estimate = beta,
+    std.error = se,
+    statistic = coef_tab[prs_var, "z value"],
+    p.value = coef_tab[prs_var, "Pr(>|z|)"],
+    conf.low = beta - zval * se,
+    conf.high = beta + zval * se,
+    estimate_or = exp(beta),
+    conf.low_or = exp(beta - zval * se),
+    conf.high_or = exp(beta + zval * se)
+  )
+}
+
+model_df_total <- final_df %>%
+  dplyr::filter(!is.na(cognitive_impairment))
+
+model_df_female <- model_df_total %>%
+  dplyr::filter(Sex == "Female")
+
+model_df_male <- model_df_total %>%
+  dplyr::filter(Sex == "Male")
+
+habs_total_results <- purrr::map_dfr(
+  prs_vars,
+  ~fit_habs_prs(model_df_total, .x, "Total", TRUE)
+)
+
+habs_female_results <- purrr::map_dfr(
+  prs_vars,
+  ~fit_habs_prs(model_df_female, .x, "Female", FALSE)
+)
+
+habs_male_results <- purrr::map_dfr(
+  prs_vars,
+  ~fit_habs_prs(model_df_male, .x, "Male", FALSE)
+)
+
+all_results <- dplyr::bind_rows(
+  habs_total_results,
+  habs_female_results,
+  habs_male_results
+) %>%
+  dplyr::group_by(sex_strata) %>%
+  dplyr::mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Trait = unname(prs_label_map[prs_var]))
+
+missing_trait_labels <- all_results %>%
+  dplyr::filter(is.na(Trait)) %>%
+  dplyr::distinct(prs_var)
+
+if (nrow(missing_trait_labels) > 0) {
+  print(missing_trait_labels)
+  stop("Some prs_var values do not have labels in prs_label_map.")
+}
+
+trait_order <- all_results %>%
+  dplyr::filter(sex_strata == "Total") %>%
+  dplyr::arrange(estimate_or) %>%
+  dplyr::pull(Trait)
+
+sample_size_df <- tibble(
+  sex_strata = c("Total", "Female", "Male"),
+  n_total = c(nrow(model_df_total), nrow(model_df_female), nrow(model_df_male)),
+  n_cases = c(
+    sum(model_df_total$cognitive_impairment == 1, na.rm = TRUE),
+    sum(model_df_female$cognitive_impairment == 1, na.rm = TRUE),
+    sum(model_df_male$cognitive_impairment == 1, na.rm = TRUE)
+  ),
+  n_controls = c(
+    sum(model_df_total$cognitive_impairment == 0, na.rm = TRUE),
+    sum(model_df_female$cognitive_impairment == 0, na.rm = TRUE),
+    sum(model_df_male$cognitive_impairment == 0, na.rm = TRUE)
+  )
+)
+
+cat("Model rows:", nrow(all_results), "\n")
+cat("Sample-size rows:", nrow(sample_size_df), "\n")
+```
+
+## Baseline Table 1
+
+```{r baseline-table1}
+library(gtsummary)
+library(flextable)
+
+baseline_table_data <- model_df_total %>%
+  dplyr::mutate(
+    taking_cholesterol_meds = factor(taking_cholesterol_meds, levels = c(0, 1), labels = c("No", "Yes")),
+    taking_diabetes_meds = factor(taking_diabetes_meds, levels = c(0, 1), labels = c("No", "Yes")),
+    taking_hypertension_meds = factor(taking_hypertension_meds, levels = c(0, 1), labels = c("No", "Yes")),
+    APOE4 = factor(APOE4_Positivity, levels = c(0, 1), labels = c("Negative", "Positive")),
+    Cognitive_Impairment = factor(cognitive_impairment, levels = c(0, 1), labels = c("No", "Yes"))
+  ) %>%
+  dplyr::select(
+    Sex, Age, ID_Education, Cognitive_Impairment, Race, APOE4,
+    BW_CholTotal, BW_LDLchol, BW_HDLChol, BW_Triglycerides, BW_HbA1c,
+    OM_BMI, OM_BP_DIA, OM_BP_SYS, Pulse_Pressure,
+    CDX_Depression, CDX_Hypertension, CDX_Diabetes,
+    AUDIT_Total, SocialSupport_Total, IMH_TBI,
+    Smoke, Vision_Loss, Hearing_Loss,
+    RAPA_1_Scores, RAPA_2_Scores,
+    taking_cholesterol_meds, taking_diabetes_meds, taking_hypertension_meds,
+    GDS_Category
+  )
+
+baseline_table1 <- baseline_table_data %>%
+  tbl_summary(
+    by = Sex,
+    missing = "no",
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} / {N} ({p}%)"
+    ),
+    label = list(
+      ID_Education ~ "Education (years)",
+      Cognitive_Impairment ~ "Cognitive impairment",
+      BW_CholTotal ~ "Total cholesterol (mg/dL)",
+      BW_LDLchol ~ "LDL cholesterol (mg/dL)",
+      BW_HDLChol ~ "HDL cholesterol (mg/dL)",
+      BW_Triglycerides ~ "Triglycerides (mg/dL)",
+      BW_HbA1c ~ "HbA1c",
+      OM_BMI ~ "BMI",
+      OM_BP_DIA ~ "Diastolic BP (mmHg)",
+      OM_BP_SYS ~ "Systolic BP (mmHg)",
+      Pulse_Pressure ~ "Pulse pressure (mmHg)",
+      CDX_Depression ~ "Clinical depression",
+      CDX_Hypertension ~ "Hypertension",
+      CDX_Diabetes ~ "Diabetes",
+      AUDIT_Total ~ "Alcohol use score",
+      SocialSupport_Total ~ "Social support score",
+      IMH_TBI ~ "History of TBI",
+      Smoke ~ "Smoking status",
+      Vision_Loss ~ "Vision loss",
+      Hearing_Loss ~ "Hearing loss",
+      RAPA_1_Scores ~ "Physical activity score 1",
+      RAPA_2_Scores ~ "Physical activity score 2",
+      taking_cholesterol_meds ~ "Taking cholesterol meds",
+      taking_diabetes_meds ~ "Taking diabetes meds",
+      taking_hypertension_meds ~ "Taking hypertension meds",
+      GDS_Category ~ "GDS category"
+    )
+  ) %>%
+  add_overall() %>%
+  add_p() %>%
+  modify_caption("**Table 1. Baseline characteristics of the HABS-HD analytic sample used for individual PRS analyses**")
+
+baseline_table1
+
+baseline_table1_flex <- as_flex_table(baseline_table1)
+```
+
+
+
+## Results table
+
+```{r results-table}
+results_table <- all_results %>%
+  dplyr::mutate(
+    Trait = factor(Trait, levels = trait_order),
+    `Odds Ratio (95% CI)` = sprintf("%.3f (%.3f–%.3f)", estimate_or, conf.low_or, conf.high_or),
+    `P Value` = formatC(p.value, format = "e", digits = 2),
+    `FDR` = formatC(p_adj_fdr, format = "e", digits = 2)
+  ) %>%
+  dplyr::arrange(Trait, sex_strata) %>%
+  dplyr::mutate(Trait = as.character(Trait)) %>%
+  dplyr::select(Trait, sex_strata, `Odds Ratio (95% CI)`, `P Value`, `FDR`)
+
+results_table
+```
+```{r total-plot}
+plot_total <- all_results %>%
+  dplyr::filter(sex_strata == "Total") %>%
+  dplyr::mutate(
+    Trait = factor(Trait, levels = trait_order),
+    sig = ifelse(p_adj_fdr < 0.05, "significant", "non-significant")
+  )
+
+p_total <- ggplot(
+  plot_total,
+  aes(
+    x = Trait,
+    y = estimate_or,
+    ymin = conf.low_or,
+    ymax = conf.high_or,
+    alpha = sig
+  )
+) +
+  geom_pointrange(size = 0.8) +
+  geom_errorbar(width = 0.3, linewidth = 0.8) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black", linewidth = 0.8) +
+  coord_flip() +
+  scale_alpha_manual(values = c("significant" = 1, "non-significant" = 0.35)) +
+  labs(
+    x = "Modifiable Risk Factors",
+    y = "Odds Ratio (95% CI)",
+    title = "Individual PRS associations with cognitive impairment in HABS-HD"
+  ) +
+  guides(alpha = "none") +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(size = 14, hjust = 0.5)
+  )
+
+p_total
+```
+```{r sex-plot}
+plot_sex <- all_results %>%
+  dplyr::filter(sex_strata %in% c("Female", "Male")) %>%
+  dplyr::mutate(
+    Trait = factor(Trait, levels = trait_order),
+    signif = dplyr::case_when(
+      p_adj_fdr < 0.001 ~ "***",
+      p_adj_fdr < 0.01 ~ "**",
+      p_adj_fdr < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    star_vjust = if_else(sex_strata == "Female", 2, -1),
+    sig = if_else(p_adj_fdr < 0.05, "significant", "non-significant")
+  )
+
+p_sex <- ggplot(
+  plot_sex,
+  aes(
+    x = Trait,
+    y = estimate_or,
+    ymin = conf.low_or,
+    ymax = conf.high_or,
+    color = sex_strata,
+    shape = sex_strata,
+    alpha = sig
+  )
+) +
+  geom_pointrange(position = position_dodge(width = 0.6), size = 1) +
+  geom_errorbar(width = 0.3, position = position_dodge(width = 0.6), linewidth = 0.8) +
+  geom_text(
+    aes(label = signif, vjust = star_vjust),
+    position = position_dodge(width = 0.6),
+    show.legend = FALSE
+  ) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black", linewidth = 0.8) +
+  coord_flip() +
+  scale_color_manual(values = c("Female" = "deeppink", "Male" = "blue")) +
+  scale_shape_manual(values = c("Female" = 16, "Male" = 17)) +
+  scale_alpha_manual(values = c("significant" = 1, "non-significant" = 0.3)) +
+  labs(
+    x = "Modifiable Risk Factors",
+    y = "Odds Ratio (95% CI)",
+    title = "Individual PRS associations with cognitive impairment by sex in HABS-HD",
+    color = "Sex",
+    shape = "Sex"
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(shape = c(16, 17), alpha = 1)),
+    shape = "none",
+    alpha = "none"
+  ) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    plot.title = element_text(size = 14, hjust = 0.5),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    plot.margin = margin(1, 1, 1, 2, "cm")
+  )
+
+p_sex
+```
+```{r sample-size-table}
+sample_size_table <- sample_size_df %>%
+  dplyr::arrange(sex_strata)
+
+sample_size_table
+
+sample_size_gt <- sample_size_table %>%
+  gt() %>%
+  tab_header(
+    title = "Table 2. Sample-size summary for HABS-HD individual PRS analyses"
+  )
+
+sample_size_gt
+results_gt <- results_table %>%
+  gt() %>%
+  tab_header(
+    title = "Table 3. HABS-HD individual PRS association results"
+  )
+
+results_gt
+```
+```{r exports}
+flextable::save_as_docx(
+  "HABS-HD Baseline Table 1" = baseline_table1_flex,
+  path = file.path(out_tbl_dir, "habshd_individual_prs_baseline_table1.docx")
+)
+
+gt::gtsave(
+  as_gt(baseline_table1),
+  filename = file.path(out_tbl_dir, "habshd_individual_prs_baseline_table1.rtf")
+)
+
+saveRDS(final_df, file.path(out_rds_dir, "habshd_individual_prs_analytic_dataset.rds"))
+saveRDS(all_results, file.path(out_rds_dir, "habshd_individual_prs_results.rds"))
+saveRDS(sample_size_df, file.path(out_rds_dir, "habshd_individual_prs_sample_sizes.rds"))
+
+write.csv(results_table, file.path(out_tbl_dir, "habshd_individual_prs_results.csv"), row.names = FALSE)
+write.csv(sample_size_table, file.path(out_tbl_dir, "habshd_individual_prs_sample_sizes.csv"), row.names = FALSE)
+xlsx_file <- file.path(out_tbl_dir, "habshd_individual_prs_results.xlsx")
+
+wb <- openxlsx::createWorkbook()
+
+openxlsx::addWorksheet(wb, "Baseline_Table1")
+openxlsx::writeData(wb, "Baseline_Table1", baseline_table_data)
+
+openxlsx::addWorksheet(wb, "Sample_Sizes")
+openxlsx::writeData(wb, "Sample_Sizes", sample_size_table)
+
+openxlsx::addWorksheet(wb, "Main_Results")
+openxlsx::writeData(wb, "Main_Results", results_table)
+
+openxlsx::addWorksheet(wb, "Raw_Model_Results")
+openxlsx::writeData(wb, "Raw_Model_Results", all_results)
+
+openxlsx::saveWorkbook(wb, xlsx_file, overwrite = TRUE)
+
+cat("Workbook written to:", xlsx_file, "\n")
+gt::gtsave(
+  sample_size_gt,
+  filename = file.path(out_tbl_dir, "habshd_individual_prs_sample_sizes.html")
+)
+gt::gtsave(
+  gt::gt(results_table) %>% 
+    tab_header(title = "Table 3. HABS-HD individual PRS association results"),
+  filename = file.path(out_tbl_dir, "habshd_individual_prs_results.html")
+)
+
+gt::gtsave(
+  as_gt(baseline_table1),
+  filename = file.path(out_tbl_dir, "habshd_individual_prs_baseline_table1.html")
+)
+
+ggsave(
+  filename = file.path(out_fig_dir, "habshd_individual_prs_total.png"),
+  plot = p_total,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(out_fig_dir, "habshd_individual_prs_by_sex.png"),
+  plot = p_sex,
+  width = 12,
+  height = 14,
+  dpi = 600
+)
+
+stopifnot(nrow(all_results) == length(prs_vars) * 3)
+stopifnot(nrow(sample_size_df) == 3)
+
+cat("Finished successfully.\n")
+```
+

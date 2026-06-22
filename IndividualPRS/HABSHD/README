@@ -1,0 +1,30 @@
+Step 2. Validate PRSs and test biomarker associations
+
+Scriptvalidation/HABS-HD_prs_phenotype_validation.qmd
+
+PurposePerforms two analyses:
+
+Phenotype validation: tests whether each PRS predicts its matched phenotype in HABS-HD
+
+Endophenotype analysis: tests whether each PRS is associated with AD-related plasma biomarkers
+
+This script also reads precomputed composite PRS biomarker results for comparison.
+
+Main input shared_data/habshd_master_df.rds
+
+Additional inputcompositePRS/results/rds/endo_results.rds
+
+Outputs
+
+results/rds/habshd_prs_validation_base_dataset.rds
+
+results/rds/habshd_prs_endophenotype_base_dataset.rds
+
+results/rds/habshd_prs_validation_results.rds
+
+results/rds/habshd_prs_endophenotype_results.rds
+
+results/rds/habshd_combined_endophenotype_results_table.rds
+
+results tables, figures, and workbook exports
+InterpretationThis is the PRS QC / validation layer. It checks whether the PRSs behave sensibly in the HABS-HD cohort before or alongside downstream scientific association analyses.

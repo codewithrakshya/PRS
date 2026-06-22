@@ -1,0 +1,659 @@
+---
+title: "compositePRS"
+format: html
+---
+
+This QMD trains composite PRS models in ADGC, compares plain logistic/ridge/elastic-net models, tests whether the ADGC-trained composite PRS predicts cognitive impairment in HABS-HD, tests whether the HABS-HD composite PRS relates to plasma biomarkers, and evaluates which individual PRSs contribute most through leave-one-out analysis.
+
+Loads config.yaml
+config controls 
+seed
+ADGC input paths
+HABS-HD input paths
+PRS folder names
+results directory
+
+R/helpers.R --> package loading, trait labels, PRS variable definitions, config helpers
+
+R/load_data.R --> ADGC/HABS-HD data loading and PRS merging
+
+R/models.R --> model-fitting functions
+
+R/exports.R --> Excel/table export functions
+
+R/plots.R --> plotting functions
+
+1. ADGC PLINK family/sample file:
+   /wynton/group/andrews/users/rakshyasharma/PRS/PRS-CS-Auto/resources/ADGC/adgc.fam
+
+2. ADGC covariate file:
+   /wynton/group/andrews/data/adgc/ADGCdatasets/covar_covariates.tsv
+
+3. ADGC pgsc_calc PRS result folders:
+   /wynton/group/andrews/users/rakshyasharma/pgsc_calc/adgc/results/ADGC
+   
+Graham2021tc_eur
+Graham2021TG_eur
+Graham2021HDL_eur
+Graham2021LDL_eur
+Keaton2024diaBP
+Keaton2024PP
+Keaton2024sysBP
+Okbay2022educ
+SaundersDrnkwk
+SaundersSmkInt
+SuzukiDia2024
+YengoBMI2018
+Socrates2024
+Trpchevska2022
+Choquet2021
+Klimentidis2018mvpa
+Adams2025mdd
+
+reads the already-built shared master file: habshd_master_df <- readRDS(
+  "/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds"
+)
+
+train_df --> 70% ADGC training data, cases and controls sampled separately
+
+test_df --> 30% ADGC held-out test data
+
+train_df_F --> female-only ADGC training data
+
+test_df_F --> female-only ADGC test data
+
+train_df_M --> male-only ADGC training data
+
+test_df_M --> male-only ADGC test data
+
+
+adgc_df_prs.rds --> Full ADGC PRS analysis dataset
+
+habshd_eval.rds --> Filtered HABS-HD external validation dataset
+
+plain_total.rds --> Total-sample plain logistic composite PRS model object
+
+plain_female.rds --> Female-only plain logistic composite PRS model object
+
+plain_male.rds --> Male-only plain logistic composite PRS model object
+
+plain_results.rds --> Plain logistic model summary results
+
+ridge_results.rds --> Ridge model summary results
+
+enet_results.rds --> Elastic-net model summary results
+
+compare_results.rds --> Combined plain/ridge/elastic-net comparison results
+
+hab_results.rds --> HABS-HD external validation results
+
+endo_results.rds --> Composite PRS biomarker/endophenotype results in HABS-HD
+
+loo_adgc_results.rds --> ADGC leave-one-PRS-out results
+
+loo_hab_results.rds --> HABS-HD leave-one-PRS-out results
+
+Composite PRS model results
+ADGC train/test model results
+Ridge and elastic net comparison results
+External HABS-HD validation results
+HABS-HD biomarker endophenotype results
+Leave-one-PRS-out sensitivity results
+Table 1 outputs
+Figures
+RDS objects
+Excel workbook
+
+output tree
+results/
+├── Composite_PRS_main_results.xlsx
+│
+├── rds/
+│   ├── adgc_df_prs.rds
+│   ├── habshd_eval.rds
+│   ├── plain_total.rds
+│   ├── plain_female.rds
+│   ├── plain_male.rds
+│   ├── plain_results.rds
+│   ├── ridge_results.rds
+│   ├── enet_results.rds
+│   ├── compare_results.rds
+│   ├── hab_results.rds
+│   ├── endo_results.rds
+│   ├── loo_adgc_results.rds
+│   └── loo_hab_results.rds
+│
+├── tables/
+│   ├── ADGC_table1_analytic_sample.docx
+│   ├── HABSHD_table1_analytic_sample.docx
+│   ├── ADGC_table1_analytic_sample.rtf
+│   └── HABSHD_table1_analytic_sample.rtf
+│
+└── figures/
+    ├── adgc_model_comparison.png
+    ├── habs_main_results.png
+    ├── endophenotypes.png
+    ├── loo_adgc.png
+    └── loo_hab.png
+    
+    
+    
+flow chart 
+
+config.yml + R helper scripts
+        |
+        v
+Load ADGC sample/covariate/PRS data
+        |
+        v
+adgc_df_prs
+        |
+        v
+70/30 stratified train-test split
+        |
+        v
+Train composite PRS models in ADGC
+        |
+        |-- Plain logistic
+        |-- Ridge
+        |-- Elastic net
+        |
+        v
+ADGC held-out model comparison
+        |
+        v
+compare_results
+        |
+        v
+Read HABS-HD master dataset
+        |
+        v
+habshd_eval
+        |
+        v
+Apply ADGC-trained composite PRS to HABS-HD
+        |
+        v
+hab_results
+        |
+        v
+Run composite PRS biomarker models in HABS-HD
+        |
+        v
+endo_results
+        |
+        v
+Run leave-one-PRS-out analyses
+        |
+        |-- loo_adgc_results
+        |-- loo_hab_results
+        |
+        v
+Export RDS files, Excel workbook, Table 1 files, and figures
+
+
+```{r setup}
+
+target_lib <- "/wynton/home/andrews/rakshyasharma/R/rocky8-x86_64-pc-linux-gnu-library/4.4-CBI-gcc13"
+
+.libPaths(c(target_lib, .libPaths()))
+
+cat("R version:", R.version.string, "\n")
+cat("Library paths used by compositePRS.qmd:\n")
+print(.libPaths())
+cat("openxlsx available:", requireNamespace("openxlsx", quietly = TRUE), "\n")
+
+source("R/helpers.R")
+source("R/load_data.R")
+source("R/models.R")
+source("R/exports.R")
+source("R/plots.R")
+
+load_required_packages()
+cfg <- load_project_config("config.yml")
+
+set.seed(cfg$seed)
+```
+
+```{r adgc-data}
+adgc_df_prs <- load_adgc_data(
+  fam_file = cfg$paths$fam_file,
+  covar_file = cfg$paths$covar_file,
+  base_dir = cfg$paths$adgc_base_dir,
+  folder_names = cfg$folder_names,
+  trait_labels = trait_labels,
+  all_prs_vars = all_prs_vars
+)
+
+cat("Rows in ADGC analysis dataset:", nrow(adgc_df_prs), "\n")
+cat("Columns in ADGC analysis dataset:", ncol(adgc_df_prs), "\n")
+```
+
+```{r train-test-split}
+case_ids <- adgc_df_prs %>% dplyr::filter(status_binary == 1) %>% dplyr::pull(ID_2)
+control_ids <- adgc_df_prs %>% dplyr::filter(status_binary == 0) %>% dplyr::pull(ID_2)
+
+train_case_ids <- sample(case_ids, size = floor(0.7 * length(case_ids)))
+train_control_ids <- sample(control_ids, size = floor(0.7 * length(control_ids)))
+train_ids <- c(train_case_ids, train_control_ids)
+
+train_df <- adgc_df_prs %>% dplyr::filter(ID_2 %in% train_ids)
+test_df  <- adgc_df_prs %>% dplyr::filter(!ID_2 %in% train_ids)
+
+train_df_F <- train_df %>% dplyr::filter(Sex == 2)
+test_df_F  <- test_df %>% dplyr::filter(Sex == 2)
+
+train_df_M <- train_df %>% dplyr::filter(Sex == 1)
+test_df_M  <- test_df %>% dplyr::filter(Sex == 1)
+
+cat("Train rows:", nrow(train_df), "\n")
+cat("Test rows:", nrow(test_df), "\n")
+
+```
+
+```{r adgc-main-models}
+plain_total  <- fit_plain_cprs(train_df,   test_df,   all_prs_vars, "Total",  TRUE)
+plain_female <- fit_plain_cprs(train_df_F, test_df_F, all_prs_vars, "Female", FALSE)
+plain_male   <- fit_plain_cprs(train_df_M, test_df_M, all_prs_vars, "Male",   FALSE)
+
+plain_results <- dplyr::bind_rows(
+  plain_total$result,
+  plain_female$result,
+  plain_male$result
+)
+
+plain_results %>%
+  dplyr::select(sex_strata, estimate, conf.low, conf.high, p.value, test_auc)
+
+```
+
+```{r adgc-penalized-models}
+
+ridge_total  <- fit_penalized_cprs(train_df,   test_df,   all_prs_vars, 0,   "Total",  TRUE,  "Ridge")
+ridge_female <- fit_penalized_cprs(train_df_F, test_df_F, all_prs_vars, 0,   "Female", FALSE, "Ridge")
+ridge_male   <- fit_penalized_cprs(train_df_M, test_df_M, all_prs_vars, 0,   "Male",   FALSE, "Ridge")
+
+enet_total   <- fit_penalized_cprs(train_df,   test_df,   all_prs_vars, 0.5, "Total",  TRUE,  "Elastic net")
+enet_female  <- fit_penalized_cprs(train_df_F, test_df_F, all_prs_vars, 0.5, "Female", FALSE, "Elastic net")
+enet_male    <- fit_penalized_cprs(train_df_M, test_df_M, all_prs_vars, 0.5, "Male",   FALSE, "Elastic net")
+
+ridge_results <- dplyr::bind_rows(ridge_total$result, ridge_female$result, ridge_male$result)
+enet_results  <- dplyr::bind_rows(enet_total$result, enet_female$result, enet_male$result)
+
+compare_results <- dplyr::bind_rows(
+  plain_results,
+  ridge_results,
+  enet_results
+) %>%
+  dplyr::mutate(
+    sex_strata = factor(sex_strata, levels = c("Total", "Male", "Female")),
+    model = factor(model, levels = c("Plain logistic", "Ridge", "Elastic net"))
+  )
+
+compare_results %>%
+  dplyr::select(sex_strata, model, estimate, conf.low, conf.high, p.value, test_auc)
+
+```
+
+```{r habshd-data}
+
+habshd_master_df <- readRDS("/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds")
+
+habshd_eval <- habshd_master_df %>%
+  dplyr::mutate(
+    Sex = dplyr::case_when(
+      ID_Gender == 0 ~ 1L,  # Male in ADGC coding
+      ID_Gender == 1 ~ 2L,  # Female in ADGC coding
+      TRUE ~ NA_integer_
+    )
+  ) %>%
+  dplyr::filter(
+    !is.na(cognitive_impairment),
+    !is.na(Age),
+    !is.na(APOE4_Positivity),
+    !is.na(Race),
+    !is.na(PC1), !is.na(PC2), !is.na(PC3), !is.na(PC4),
+    !is.na(ID_Gender),
+    !is.na(Sex)
+  )
+```
+```{r habshd-main-results}
+hab_total_obj <- score_external_habshd(
+  hab_data = habshd_eval,
+  model_obj = plain_total,
+  outcome_var = "cognitive_impairment",
+  sex_subset = NULL,
+  sex_group = "Total"
+)
+
+hab_female_obj <- score_external_habshd(
+  hab_data = habshd_eval,
+  model_obj = plain_female,
+  outcome_var = "cognitive_impairment",
+  sex_subset = 2,
+  sex_group = "Female"
+)
+
+hab_male_obj <- score_external_habshd(
+  hab_data = habshd_eval,
+  model_obj = plain_male,
+  outcome_var = "cognitive_impairment",
+  sex_subset = 1,
+  sex_group = "Male"
+)
+
+hab_results <- dplyr::bind_rows(
+  hab_total_obj$result,
+  hab_female_obj$result,
+  hab_male_obj$result
+)
+
+hab_results %>%
+  dplyr::select(group, estimate, conf.low, conf.high, p.value, test_auc)
+```
+
+```{r endophenotypes}
+hab_total_scored  <- hab_total_obj$data
+hab_female_scored <- hab_female_obj$data
+hab_male_scored   <- hab_male_obj$data
+
+endo_results <- run_endophenotype_models(
+  hab_total_scored = hab_total_scored,
+  hab_female_scored = hab_female_scored,
+  hab_male_scored = hab_male_scored
+)
+
+endo_results %>%
+  dplyr::select(group, outcome, estimate, conf.low, conf.high, p.value, p_adj_fdr)
+
+```
+```{r loo-analysis}
+loo_adgc_total <- run_loo_plain_adgc(train_df,   test_df,   all_prs_vars, include_sex = TRUE,  sex_group = "Total")
+loo_adgc_female <- run_loo_plain_adgc(train_df_F, test_df_F, all_prs_vars, include_sex = FALSE, sex_group = "Female")
+loo_adgc_male <- run_loo_plain_adgc(train_df_M, test_df_M, all_prs_vars, include_sex = FALSE, sex_group = "Male")
+
+loo_adgc_results <- dplyr::bind_rows(
+  loo_adgc_total,
+  loo_adgc_female,
+  loo_adgc_male
+)
+
+loo_hab_total <- run_loo_habshd(
+  train_df = train_df,
+  test_df = test_df,
+  hab_data = habshd_eval,
+  prs_vars = all_prs_vars
+)
+
+loo_hab_female <- run_loo_habshd_sex(
+  train_df = train_df_F,
+  test_df = test_df_F,
+  hab_data = habshd_eval,
+  prs_vars = all_prs_vars,
+  sex_code = 2,
+  sex_group = "Female"
+)
+
+loo_hab_male <- run_loo_habshd_sex(
+  train_df = train_df_M,
+  test_df = test_df_M,
+  hab_data = habshd_eval,
+  prs_vars = all_prs_vars,
+  sex_code = 1,
+  sex_group = "Male"
+)
+
+loo_hab_results <- dplyr::bind_rows(
+  loo_hab_total,
+  loo_hab_female,
+  loo_hab_male
+)
+
+loo_adgc_results %>% dplyr::slice_head(n = 5)
+loo_hab_results %>% dplyr::slice_head(n = 5)
+
+```
+
+```{r plot-ready-objects}
+full_adgc_plot <- plain_results %>%
+  dplyr::mutate(
+    dropped_prs = "Full composite",
+    sex_strata = factor(sex_strata, levels = c("Total", "Female", "Male"))
+  ) %>%
+  dplyr::select(sex_strata, dropped_prs, estimate, conf.low, conf.high, p.value, test_auc)
+
+loo_adgc_plot_df <- dplyr::bind_rows(
+  full_adgc_plot,
+  loo_adgc_results %>%
+    dplyr::mutate(sex_strata = factor(sex_strata, levels = c("Total", "Female", "Male"))) %>%
+    dplyr::select(sex_strata, dropped_prs, estimate, conf.low, conf.high, p.value, test_auc)
+) %>%
+  dplyr::mutate(
+    dropped_prs = factor(
+      dropped_prs,
+      levels = c("Full composite", rev(unique(loo_adgc_results$dropped_prs)))
+    )
+  )
+
+full_hab_plot <- hab_results %>%
+  dplyr::mutate(
+    dropped_prs = "Full composite",
+    group = factor(group, levels = c("Total", "Female", "Male"))
+  ) %>%
+  dplyr::select(group, dropped_prs, estimate, conf.low, conf.high, p.value, test_auc)
+
+loo_hab_plot_df <- dplyr::bind_rows(
+  full_hab_plot,
+  loo_hab_results %>%
+    dplyr::mutate(group = factor(group, levels = c("Total", "Female", "Male"))) %>%
+    dplyr::select(group, dropped_prs, estimate, conf.low, conf.high, p.value, test_auc)
+) %>%
+  dplyr::mutate(
+    dropped_prs = factor(
+      dropped_prs,
+      levels = c("Full composite", rev(unique(loo_hab_results$dropped_prs)))
+    )
+  )
+
+```
+
+```{r save-rds}
+dir.create(file.path(cfg$paths$results_dir, "rds"), recursive = TRUE, showWarnings = FALSE)
+
+saveRDS(adgc_df_prs, file.path(cfg$paths$results_dir, "rds", "adgc_df_prs.rds"))
+saveRDS(habshd_eval, file.path(cfg$paths$results_dir, "rds", "habshd_eval.rds"))
+
+saveRDS(plain_total, file.path(cfg$paths$results_dir, "rds", "plain_total.rds"))
+saveRDS(plain_female, file.path(cfg$paths$results_dir, "rds", "plain_female.rds"))
+saveRDS(plain_male, file.path(cfg$paths$results_dir, "rds", "plain_male.rds"))
+
+saveRDS(plain_results, file.path(cfg$paths$results_dir, "rds", "plain_results.rds"))
+saveRDS(ridge_results, file.path(cfg$paths$results_dir, "rds", "ridge_results.rds"))
+saveRDS(enet_results, file.path(cfg$paths$results_dir, "rds", "enet_results.rds"))
+saveRDS(compare_results, file.path(cfg$paths$results_dir, "rds", "compare_results.rds"))
+saveRDS(hab_results, file.path(cfg$paths$results_dir, "rds", "hab_results.rds"))
+saveRDS(endo_results, file.path(cfg$paths$results_dir, "rds", "endo_results.rds"))
+saveRDS(loo_adgc_results, file.path(cfg$paths$results_dir, "rds", "loo_adgc_results.rds"))
+saveRDS(loo_hab_results, file.path(cfg$paths$results_dir, "rds", "loo_hab_results.rds"))
+
+```
+
+```{r export-workbook}
+xlsx_out <- file.path(cfg$paths$results_dir, "Composite_PRS_main_results.xlsx")
+
+export_main_results_xlsx(
+  plain_results = plain_results,
+  ridge_results = ridge_results,
+  enet_results = enet_results,
+  compare_results = compare_results,
+  hab_results = hab_results,
+  output_file = xlsx_out
+)
+
+cat("Workbook written to:", xlsx_out, "\n")
+
+```
+## ADGC Table 1
+
+```{r adgc-table1}
+library(gtsummary)
+library(flextable)
+library(gt)
+
+adgc_table1_data <- adgc_df_prs %>%
+  dplyr::transmute(
+    Sex = factor(Sex, levels = c(1, 2), labels = c("Male", "Female")),
+    Status = factor(status, levels = c(1, 2), labels = c("Cognitively Unimpaired", "Alzheimer's Disease")),
+    Age = aaoaae,
+    APOE4 = factor(apoe4any, levels = c(0, 1), labels = c("Negative", "Positive")),
+    Ancestry = MostSimilarPop
+  )
+
+adgc_table1_summary <- adgc_table1_data %>%
+  tbl_summary(
+    by = Sex,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} / {N} ({p}%)"
+    ),
+    missing = "no"
+  ) %>%
+  add_overall() %>%
+  modify_caption("**Table 1. Baseline characteristics of the ADGC analytic sample**")
+
+adgc_table1_summary
+
+```
+
+## HABS-HD Table 1
+
+```{r habshd-table1}
+library(gtsummary)
+library(flextable)
+library(gt)
+
+habshd_table1_data <- habshd_eval %>%
+  dplyr::transmute(
+    Sex = factor(ID_Gender, levels = c(0, 1), labels = c("Male", "Female")),
+    Cognitive_Impairment = factor(cognitive_impairment, levels = c(0, 1), labels = c("No", "Yes")),
+    Age = Age,
+    Race = Race,
+    APOE4 = factor(APOE4_Positivity, levels = c(0, 1), labels = c("Negative", "Positive"))
+  )
+
+habshd_table1_summary <- habshd_table1_data %>%
+  tbl_summary(
+    by = Sex,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} / {N} ({p}%)"
+    ),
+    missing = "no"
+  ) %>%
+  add_overall() %>%
+  modify_caption("**Table 2. Baseline characteristics of the HABS-HD analytic sample**")
+
+habshd_table1_summary
+```
+
+## Export Table 1 outputs
+
+```{r export-table1}
+dir.create(file.path(cfg$paths$results_dir, "tables"), recursive = TRUE, showWarnings = FALSE)
+
+adgc_table1_flex <- as_flex_table(adgc_table1_summary)
+habshd_table1_flex <- as_flex_table(habshd_table1_summary)
+
+flextable::save_as_docx(
+  "ADGC Table 1" = adgc_table1_flex,
+  path = file.path(cfg$paths$results_dir, "tables", "ADGC_table1_analytic_sample.docx")
+)
+
+flextable::save_as_docx(
+  "HABS-HD Table 1" = habshd_table1_flex,
+  path = file.path(cfg$paths$results_dir, "tables", "HABSHD_table1_analytic_sample.docx")
+)
+
+gt::gtsave(
+  as_gt(adgc_table1_summary),
+  filename = file.path(cfg$paths$results_dir, "tables", "ADGC_table1_analytic_sample.rtf")
+)
+
+gt::gtsave(
+  as_gt(habshd_table1_summary),
+  filename = file.path(cfg$paths$results_dir, "tables", "HABSHD_table1_analytic_sample.rtf")
+)
+```
+
+```{r main-plots}
+p_adgc_compare <- plot_adgc_model_comparison(compare_results)
+p_hab_main <- plot_hab_main_results(hab_results)
+p_endo <- plot_endophenotypes(endo_results)
+p_loo_adgc <- plot_loo_adgc(loo_adgc_plot_df)
+p_loo_hab <- plot_loo_hab(loo_hab_plot_df)
+
+p_adgc_compare
+p_hab_main
+p_endo
+p_loo_adgc
+p_loo_hab
+```
+
+```{r save-plots}
+dir.create(file.path(cfg$paths$results_dir, "figures"), recursive = TRUE, showWarnings = FALSE)
+
+ggplot2::ggsave(
+  filename = file.path(cfg$paths$results_dir, "figures", "adgc_model_comparison.png"),
+  plot = p_adgc_compare,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+ggplot2::ggsave(
+  filename = file.path(cfg$paths$results_dir, "figures", "habs_main_results.png"),
+  plot = p_hab_main,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+ggplot2::ggsave(
+  filename = file.path(cfg$paths$results_dir, "figures", "endophenotypes.png"),
+  plot = p_endo,
+  width = 9,
+  height = 6,
+  dpi = 300
+)
+
+ggplot2::ggsave(
+  filename = file.path(cfg$paths$results_dir, "figures", "loo_adgc.png"),
+  plot = p_loo_adgc,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+ggplot2::ggsave(
+  filename = file.path(cfg$paths$results_dir, "figures", "loo_hab.png"),
+  plot = p_loo_hab,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+```
+
+
+## Analytic sample checks
+
+```{r sample-checks}
+cat("ADGC analytic N:", nrow(adgc_df_prs), "\n")
+cat("HABS-HD analytic N:", nrow(habshd_eval), "\n")
+
+stopifnot(nrow(adgc_df_prs) == nrow(dplyr::distinct(adgc_df_prs, ID_2)))
+stopifnot(nrow(habshd_eval) == nrow(dplyr::distinct(habshd_eval, IID)))
+stopifnot(length(intersect(train_df$ID_2, test_df$ID_2)) == 0)
+stopifnot(nrow(plain_results) == 3)
+stopifnot(nrow(hab_results) == 3)
+```

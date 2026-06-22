@@ -1,0 +1,232 @@
+```{r}
+suppressPackageStartupMessages({
+  library(readr)
+  library(dplyr)
+  library(stringr)
+  library(tidyr)
+})
+
+# -----------------------------
+# 0) Input LDSC results
+# -----------------------------
+infile <- "/wynton/group/andrews/users/rakshyasharma/PRS/genetic_correlations/ldsc/20260116/all_results_ldsc.tsv"
+df <- read_tsv(infile, show_col_types = FALSE) %>%
+  mutate(
+    z = as.numeric(z),
+    p = as.numeric(p)
+  )
+
+# -----------------------------
+# 1) Identify rows (edit patterns if filenames change)
+# -----------------------------
+edu_id <- function(x) case_when(
+  str_detect(x, "Okbay2022educ") ~ "Okbay2022educ",
+  str_detect(x, "NealeEdu2018")  ~ "NealeEdu2018",
+  str_detect(x, "NealeEduFemale2018") ~ "NealeEduFemale2018",
+  str_detect(x, "NealeEduMale2018")   ~ "NealeEduMale2018",
+  TRUE ~ NA_character_
+)
+
+outcome_id <- function(x) case_when(
+  str_detect(x, "Belloy2024FinnGensexhet") ~ "Belloy2024FinnGensexhet",
+  str_detect(x, "Belloy2024FinnGenfemales") ~ "Belloy2024FinnGenfemales",
+  str_detect(x, "Belloy2024FinnGenmales")   ~ "Belloy2024FinnGenmales",
+  str_detect(x, "Belloy2024UKBBsexhet")     ~ "Belloy2024UKBBsexhet",
+  TRUE ~ NA_character_
+)
+
+df2 <- df %>%
+  mutate(
+    edu     = edu_id(p1),
+    outcome = outcome_id(p2)
+  ) %>%
+  filter(!is.na(edu), !is.na(outcome))
+
+# -----------------------------
+# 2) Provide sample sizes (N_eff) you want to use for scaling
+#    For Option D, we just need N_eff, and we assume z ∝ sqrt(N_eff).
+#
+#    A simple choice: N_eff = N_edu * N_ad
+#    (This makes scaling work even if you later use sex-specific education GWAS.)
+# -----------------------------
+n_map <- tibble::tribble(
+  ~id,                         ~N,
+  "Okbay2022educ",             3037499,
+  "NealeEdu2018",               357549,
+  "NealeEduFemale2018",         192300,
+  "NealeEduMale2018",           165249,
+
+  "Belloy2024FinnGensexhet",    530869,
+  "Belloy2024FinnGenfemales",   300237,
+  "Belloy2024FinnGenmales",     230632,
+
+  "Belloy2024UKBBsexhet",       774898
+)
+
+# -----------------------------
+# 3) Pull "combined" z (sexhet) for each education GWAS (FinnGen)
+# -----------------------------
+edu_for_power <- c("Okbay2022educ", "NealeEdu2018")
+
+combined_tbl <- df2 %>%
+  filter(edu %in% edu_for_power,
+         outcome == "Belloy2024FinnGensexhet") %>%
+  select(edu, z_combined = z, p_combined = p)
+
+# -----------------------------
+# 4) Build target sex-strat rows (FinnGen Female/Male AD)
+# -----------------------------
+sex_tbl <- tibble::tribble(
+  ~ad_outcome,                  ~sex,
+  "Belloy2024FinnGenfemales",   "Female",
+  "Belloy2024FinnGenmales",     "Male"
+)
+
+# -----------------------------
+# 5) Option D implementation: predict z by N_eff scaling
+#    z_pred = z_combined * sqrt(N_eff_sex / N_eff_combined)
+#    where N_eff = N_edu * N_ad
+# -----------------------------
+getN <- function(id) n_map$N[match(id, n_map$id)]
+
+alpha_nominal <- 0.05
+zcrit <- qnorm(1 - alpha_nominal/2)
+
+# "Power" from expected z (mu) without SE:
+power_from_mu <- function(mu, alpha = 0.05){
+  zc <- qnorm(1 - alpha/2)
+  (1 - pnorm(zc - mu)) + pnorm(-zc - mu)
+}
+
+pred_tbl <- tidyr::crossing(
+  tibble(edu = edu_for_power),
+  sex_tbl
+) %>%
+  left_join(combined_tbl, by = "edu") %>%
+  mutate(
+    N_edu = getN(edu),
+    N_ad_combined = getN("Belloy2024FinnGensexhet"),
+    N_ad_sex = getN(ad_outcome),
+
+    # N_eff definition for scaling
+    N_eff_combined = N_edu * N_ad_combined,
+    N_eff_sex      = N_edu * N_ad_sex,
+
+    scale_factor = sqrt(N_eff_sex / N_eff_combined),
+
+    z_pred = z_combined * scale_factor,
+
+    # predicted two-sided p-value from z_pred
+    p_pred = 2 * pnorm(-abs(z_pred)),
+
+    # optional: "predicted power" treating z_pred as mean under H1
+    power_pred_alpha05 = power_from_mu(mu = z_pred, alpha = alpha_nominal)
+  ) %>%
+  arrange(edu, sex)
+
+# Optional Bonferroni (across the predicted sex tests)
+alpha_bonf <- 0.05 / nrow(pred_tbl)
+pred_tbl <- pred_tbl %>%
+  mutate(
+    power_pred_bonf = power_from_mu(mu = z_pred, alpha = alpha_bonf)
+  )
+
+write_tsv(pred_tbl, "z_scaled_sexstrat_from_combined.tsv")
+
+print(pred_tbl %>% select(
+  edu, sex,
+  z_combined, p_combined,
+  scale_factor, z_pred, p_pred,
+  power_pred_alpha05, power_pred_bonf
+))
+
+cat("\nSaved: z_scaled_sexstrat_from_combined.tsv\n")
+cat("Bonferroni alpha used:", signif(alpha_bonf, 3), "\n")
+
+```
+
+```{r}
+
+suppressPackageStartupMessages({
+  library(readr)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+})
+
+pred <- read_tsv("z_scaled_sexstrat_from_combined.tsv", show_col_types = FALSE) %>%
+  mutate(
+    edu_label = case_when(
+      edu == "Okbay2022educ"      ~ "Okbay 2022",
+      edu == "NealeEdu2018"       ~ "Neale 2018",
+      TRUE ~ edu
+    ),
+    sex = factor(sex, levels = c("Female", "Male"))
+  )
+
+# Power from expected z under H1 (no SE)
+power_from_mu <- function(mu, alpha = 0.05) {
+  zc <- qnorm(1 - alpha/2)
+  (1 - pnorm(zc - mu)) + pnorm(-zc - mu)
+}
+
+alpha_nominal <- 0.05
+m_bonf <- nrow(pred)                 # same family as your predicted sex tests
+alpha_bonf <- 0.05 / m_bonf
+
+# Scale the combined effect up/down (relative to observed combined z)
+mult_grid <- seq(0.5, 1.5, by = 0.05)
+
+curve_df <- pred %>%
+  tidyr::crossing(mult = mult_grid) %>%
+  mutate(
+    z_pred_scaled = z_pred * mult,
+    power_nominal = power_from_mu(z_pred_scaled, alpha = alpha_nominal),
+    power_bonf    = power_from_mu(z_pred_scaled, alpha = alpha_bonf)
+  ) %>%
+  pivot_longer(cols = c(power_nominal, power_bonf),
+               names_to = "metric", values_to = "power") %>%
+  mutate(
+    alpha = ifelse(metric == "power_nominal", "Nominal (α=0.05)", "Bonferroni"),
+    alpha = factor(alpha, levels = c("Nominal (α=0.05)", "Bonferroni"))
+  )
+
+p_curve <- ggplot(curve_df, aes(x = mult, y = power, linetype = alpha)) +
+  geom_line(linewidth = 0.9) +
+  geom_hline(yintercept = 0.80, linetype = "dashed") +
+  coord_cartesian(ylim = c(0, 1)) +
+  facet_grid(sex ~ edu_label) +
+  labs(
+    x = "Multiplier on combined effect (1.0 = observed combined effect)",
+    y = "Predicted power",
+    title = "Power sensitivity to plausible effect-size attenuation",
+    subtitle = "Scaling; dashed line indicates 80% power"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave("power_curves__effect_multiplier.png", p_curve, width = 11.5, height = 6.2, dpi = 300)
+print(p_curve)
+```
+
+
+#march 09 2026
+
+```{r}
+# --------------------------------
+# Minimum detectable z for 80% power
+# --------------------------------
+
+find_mu_for_power <- function(target_power = 0.80, alpha = 0.05){
+  f <- function(mu){
+    power_from_mu(mu, alpha) - target_power
+  }
+  uniroot(f, c(0, 10))$root
+}
+
+z_needed_nominal <- find_mu_for_power(0.80, alpha_nominal)
+z_needed_bonf <- find_mu_for_power(0.80, alpha_bonf)
+
+cat("Z needed for 80% power (nominal):", z_needed_nominal, "\n")
+cat("Z needed for 80% power (Bonferroni):", z_needed_bonf, "\n")
+```

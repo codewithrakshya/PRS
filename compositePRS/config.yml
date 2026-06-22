@@ -1,0 +1,34 @@
+seed: 1234
+
+paths:
+  fam_file: "/wynton/group/andrews/users/rakshyasharma/PRS/PRS-CS-Auto/resources/ADGC/adgc.fam"
+  covar_file: "/wynton/group/andrews/data/adgc/ADGCdatasets/covar_covariates.tsv"
+  adgc_base_dir: "/wynton/group/andrews/users/rakshyasharma/pgsc_calc/adgc/results/ADGC"
+
+  hab_fam_file: "/wynton/group/andrews/users/rakshyasharma/PRS/PRS-CS-Auto/resources/HABSHD/HABSHD_snp_subset.fam"
+  hab_pop_file: "/wynton/group/andrews/users/rakshyasharma/pgsc_calc/habshd/results/0ld_results/Bellenguez2022load_06_25/habshd/score/habshd_popsimilarity.txt.gz"
+  hab_clinical_file: "/wynton/group/andrews/users/rakshyasharma/regression/RP_HD_7_Clinical.csv"
+  hab_genomics_file: "/wynton/group/andrews/users/rakshyasharma/regression/RP_HD_7_Genomics.csv"
+  hab_base_dir: "/wynton/group/andrews/users/rakshyasharma/pgsc_calc/habshd/results/HABSHD"
+  hab_merged_rds: "/wynton/group/andrews/users/rakshyasharma/pgsc_calc/habshd/workflow/scripts/habshd_all_merged.rds"
+
+  results_dir: "results"
+
+folder_names:
+  - Graham2021tc_eur
+  - Graham2021TG_eur
+  - Graham2021HDL_eur
+  - Graham2021LDL_eur
+  - Keaton2024diaBP
+  - Keaton2024PP
+  - Keaton2024sysBP
+  - Okbay2022educ
+  - SaundersDrnkwk
+  - SaundersSmkInt
+  - SuzukiDia2024
+  - YengoBMI2018
+  - Socrates2024
+  - Trpchevska2022
+  - Choquet2021
+  - Klimentidis2018mvpa
+  - Adams2025mdd

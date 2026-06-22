@@ -1,0 +1,571 @@
+* HABS-HD cognitive status now says MCI/dementia
+* ADGC status stays Cognitively unimpaired / Alzheimer’s disease
+* Adds footnote clarifying outcome definitions
+* APOE shown only as APOE ε4 carrier
+* Smoking shown only as Smoker
+* Physical activity shown as Physically active, high score only
+* Drops vision loss
+* Drops hearing loss
+* Drops medication variables
+* Uses continuous GDS if detected; otherwise falls back to GDS_Category
+* Adds labels for main plasma biomarkers
+
+---
+title: "combined_adgc_habshd_table1"
+output:
+  word_document: default
+---
+```{r setup, include=FALSE}
+target_lib <- "/wynton/home/andrews/rakshyasharma/R/rocky8-x86_64-pc-linux-gnu-library/4.4-CBI-gcc13"
+.libPaths(c(target_lib, .libPaths()))
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(gtsummary)
+library(openxlsx)
+library(gt)
+library(flextable)
+options(dplyr.summarise.inform = FALSE)
+theme_gtsummary_compact()
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+## -----------------------------
+## Input paths: same RDS files as analysis
+## -----------------------------
+habshd_master_rds <- "/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds"
+adgc_rds <- "/wynton/group/andrews/users/rakshyasharma/PRS/compositePRS/results/rds/adgc_df_prs.rds"
+## -----------------------------
+## Output directories
+## -----------------------------
+## Use a stable absolute output directory so files do not move depending on
+## where the Rmd is rendered from.
+out_dir <- "/wynton/group/andrews/users/rakshyasharma/PRS/tables/results"
+out_tbl_dir <- file.path(out_dir, "tables")
+out_rds_dir <- file.path(out_dir, "rds")
+dir.create(out_tbl_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_rds_dir, recursive = TRUE, showWarnings = FALSE)
+## -----------------------------
+## Load data
+## -----------------------------
+habshd_raw <- readRDS(habshd_master_rds)
+adgc_raw <- readRDS(adgc_rds)
+## -----------------------------
+## Helper functions
+## -----------------------------
+check_required_columns <- function(df, required_cols, dataset_name = "dataset") {
+  missing_cols <- setdiff(required_cols, names(df))
+  if (length(missing_cols) > 0) {
+    stop(
+      paste0(
+        dataset_name,
+        " is missing required columns: ",
+        paste(missing_cols, collapse = ", ")
+      )
+    )
+  }
+}
+safe_select_existing <- function(df, cols) {
+  existing_cols <- cols[cols %in% names(df)]
+  dplyr::select(df, dplyr::all_of(existing_cols))
+}
+as_numeric_clean <- function(x) {
+  as.numeric(as.character(x))
+}
+first_existing_col <- function(df, candidates) {
+  hit <- candidates[candidates %in% names(df)]
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+}
+## -----------------------------
+## HABS-HD required columns
+## -----------------------------
+habshd_required_cols <- c(
+  "IID",
+  "cognitive_impairment",
+  "ID_Gender",
+  "Age",
+  "APOE4_Positivity",
+  "ID_Education",
+  "BW_CholTotal",
+  "BW_LDLchol",
+  "BW_HDLChol",
+  "BW_Triglycerides",
+  "BW_HbA1c",
+  "OM_BMI",
+  "OM_BP_DIA",
+  "OM_BP_SYS",
+  "Pulse_Pressure",
+  "CDX_Hypertension",
+  'CDX_Depression',
+  "CDX_Diabetes",
+  "AUDIT_Total",
+  "SocialSupport_Total",
+  "IMH_TBI",
+  "Smoke",
+  "RAPA_1_Total"
+)
+
+check_required_columns(
+  habshd_raw,
+  habshd_required_cols,
+  dataset_name = "HABS-HD"
+)
+
+## Detect depression variable:
+## Prefer continuous GDS if present; otherwise use categorical depression.
+gds_var <- first_existing_col(
+  habshd_raw,
+  c(
+    "GDS_Total",
+    "GDS_total",
+    "GDS",
+    "GDS_Score",
+    "GDS_score",
+    "GDS15_Total",
+    "GDS_15_Total"
+  )
+)
+
+depression_var <- if (!is.na(gds_var)) {
+  gds_var
+} else if ("GDS_Category" %in% names(habshd_raw)) {
+  "GDS_Category"
+} else if ("CDX_Depression" %in% names(habshd_raw)) {
+  "CDX_Depression"
+} else {
+  NA_character_
+}
+
+## -----------------------------
+## Detect HABS-HD plasma biomarkers
+## -----------------------------
+candidate_plasma_biomarker_vars <- c(
+  "ptau181",
+  "ptau217",
+  "pTau181",
+  "pTau217",
+  "PTAU181",
+  "PTAU217",
+  "ab42_ab40",
+  "Aβ42/Aβ40",
+  "AB42_AB40",
+  "Abeta42_40",
+  "Aβ42_Aβ40",
+  "Aβ42.Aβ40",
+  "nfl",
+  "NfL",
+  "NFL",
+  "Neurofilament_Light",
+  "tau",
+  "TotalTau",
+  "total_tau",
+  "Ttau",
+  "GFAP",
+  "gfap"
+)
+plasma_biomarker_vars <- candidate_plasma_biomarker_vars[
+  candidate_plasma_biomarker_vars %in% names(habshd_raw)
+]
+## -----------------------------
+## Clean HABS-HD table variables
+## -----------------------------
+habshd_df <- habshd_raw %>%
+  dplyr::mutate(
+    IID = as.character(IID),
+
+    Sex = factor(
+      ID_Gender,
+      levels = c(1, 0),
+      labels = c("Female", "Male")
+    ),
+
+    Cognitive_Status = factor(
+      cognitive_impairment,
+      levels = c(0, 1),
+      labels = c("Cognitively unimpaired", "MCI/dementia")
+    ),
+
+    APOE4_Positivity = as.integer(APOE4_Positivity),
+    APOE4_Positivity = dplyr::if_else(
+      APOE4_Positivity %in% c(0L, 1L),
+      APOE4_Positivity,
+      NA_integer_
+    ),
+
+    APOE4 = factor(
+      APOE4_Positivity,
+      levels = c(0, 1),
+      labels = c("Negative", "Positive")
+    ),
+
+    ## Smoking: make sure this is true smoking status.
+    ## If Smoke is coded differently in HABS-HD, inspect table(habshd_raw$Smoke, useNA = "ifany").
+    Smoker = factor(
+      dplyr::case_when(
+        as.character(Smoke) %in% c("1", "Yes", "yes", "Y", "Current", "current", "Smoker", "smoker", "Ever", "ever") ~ "Yes",
+        as.character(Smoke) %in% c("0", "No", "no", "N", "Never", "never", "Non-smoker", "non-smoker") ~ "No",
+        TRUE ~ NA_character_
+      ),
+      levels = c("No", "Yes")
+    ),
+
+    ## Physical activity: high score only shown in table.
+    Physical_Activity = factor(
+      dplyr::if_else(RAPA_1_Total > 6, "High Score", "Low Score"),
+      levels = c("Low Score", "High Score")
+    )
+  ) %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::all_of(plasma_biomarker_vars),
+      as_numeric_clean
+    )
+  )
+
+## Add depression variable after detection
+if (!is.na(depression_var)) {
+  if (depression_var == gds_var) {
+    habshd_df <- habshd_df %>%
+      dplyr::mutate(
+        Depression_Table = as_numeric_clean(.data[[depression_var]])
+      )
+  } else {
+    habshd_df <- habshd_df %>%
+      dplyr::mutate(
+        Depression_Table = factor(
+          dplyr::case_when(
+            as.character(.data[[depression_var]]) %in% c("1", "Yes", "yes", "Positive", "positive", "Depressed", "depressed") ~ "Yes",
+            as.character(.data[[depression_var]]) %in% c("0", "No", "no", "Negative", "negative", "Not depressed", "not depressed") ~ "No",
+            TRUE ~ NA_character_
+          ),
+          levels = c("No", "Yes")
+        )
+      )
+  }
+}
+
+habshd_df <- habshd_df %>%
+  dplyr::filter(
+    !is.na(Sex),
+    !is.na(APOE4_Positivity)
+  )
+habshd_base_vars <- c(
+  "Sex",
+  "Age",
+  "ID_Education",
+  "Cognitive_Status",
+  "APOE4",
+  "OM_BMI",
+  "BW_CholTotal",
+  "BW_LDLchol",
+  "BW_HDLChol",
+  "BW_Triglycerides",
+  "BW_HbA1c",
+  "OM_BP_DIA",
+  "OM_BP_SYS",
+  "Pulse_Pressure",
+  "Depression_Table",
+  "CDX_Hypertension",
+  "CDX_Diabetes",
+  "CDX_Depression",
+  "AUDIT_Total",
+  "SocialSupport_Total",
+  "IMH_TBI",
+  "Smoker",
+  "Physical_Activity"
+)
+
+habshd_table1_data <- habshd_df %>%
+  safe_select_existing(c(habshd_base_vars, plasma_biomarker_vars))
+## -----------------------------
+## ADGC required columns
+## -----------------------------
+adgc_required_cols <- c(
+  "Sex",
+  "status",
+  "aaoaae",
+  "apoe4any"
+)
+check_required_columns(
+  adgc_raw,
+  adgc_required_cols,
+  dataset_name = "ADGC"
+)
+## -----------------------------
+## Clean ADGC table variables
+## -----------------------------
+## ADGC status is named Cognitive_Status only for row alignment in the merged Table 1.
+adgc_table1_data <- adgc_raw %>%
+  dplyr::transmute(
+    Sex = factor(
+      Sex,
+      levels = c(2, 1),
+      labels = c("Female", "Male")
+    ),
+    Cognitive_Status = factor(
+      status,
+      levels = c(1, 2),
+      labels = c("Cognitively unimpaired", "Alzheimer's disease")
+    ),
+    Age = dplyr::if_else(
+      as.numeric(aaoaae) >= 120,
+      NA_real_,
+      as.numeric(aaoaae)
+    ),
+    APOE4 = factor(
+      apoe4any,
+      levels = c(0, 1),
+      labels = c("Negative", "Positive")
+    )
+  ) %>%
+  dplyr::select(
+    Sex,
+    Age,
+    Cognitive_Status,
+    APOE4
+  ) %>%
+  dplyr::filter(!is.na(Sex))
+## -----------------------------
+## HABS-HD labels
+## -----------------------------
+habshd_label_list <- list(
+  Age ~ "Age",
+  ID_Education ~ "Education (years)",
+  Cognitive_Status ~ "Cognitive status",
+  APOE4 ~ "APOE ε4 carrier",
+  OM_BMI ~ "BMI",
+  BW_CholTotal ~ "Total cholesterol (mg/dL)",
+  BW_LDLchol ~ "LDL cholesterol (mg/dL)",
+  BW_HDLChol ~ "HDL cholesterol (mg/dL)",
+  BW_Triglycerides ~ "Triglycerides (mg/dL)",
+  BW_HbA1c ~ "HbA1c",
+  OM_BP_DIA ~ "Diastolic BP (mmHg)",
+  OM_BP_SYS ~ "Systolic BP (mmHg)",
+  Pulse_Pressure ~ "Pulse pressure (mmHg)",
+  CDX_Depression ~ "Clinical depression",
+  CDX_Hypertension ~ "Hypertension",
+  CDX_Diabetes ~ "Diabetes",
+  AUDIT_Total ~ "Alcohol use score",
+  SocialSupport_Total ~ "Social support score",
+  IMH_TBI ~ "History of TBI",
+  Smoker ~ "Smoker",
+  Physical_Activity ~ "Physically active"
+)
+biomarker_label_map <- list(
+  ptau181 ~ "pTau181",
+  ptau217 ~ "pTau217",
+  pTau181 ~ "pTau181",
+  pTau217 ~ "pTau217",
+  PTAU181 ~ "pTau181",
+  PTAU217 ~ "pTau217",
+  ab42_ab40 ~ "Aβ42/Aβ40",
+  AB42_AB40 ~ "Aβ42/Aβ40",
+  Abeta42_40 ~ "Aβ42/Aβ40",
+  nfl ~ "NfL",
+  NfL ~ "NfL",
+  NFL ~ "NfL",
+  Neurofilament_Light ~ "NfL",
+  tau ~ "Total tau",
+  TotalTau ~ "Total tau",
+  total_tau ~ "Total tau",
+  Ttau ~ "Total tau",
+  GFAP ~ "GFAP",
+  gfap ~ "GFAP"
+)
+
+for (bio_var in plasma_biomarker_vars) {
+  if (bio_var %in% names(habshd_table1_data)) {
+    label_expr <- biomarker_label_map[[bio_var]]
+    if (!is.null(label_expr)) {
+      habshd_label_list <- c(habshd_label_list, list(label_expr))
+    }
+  }
+}
+## -----------------------------
+## HABS-HD gtsummary table
+## -----------------------------
+habshd_type_list <- list(
+  APOE4 ~ "dichotomous",
+  Smoker ~ "dichotomous",
+  Physical_Activity ~ "dichotomous",
+  dplyr::all_of(plasma_biomarker_vars) ~ "continuous"
+)
+
+habshd_value_list <- list(
+  APOE4 ~ "Positive",
+  Smoker ~ "Yes",
+  Physical_Activity ~ "High Score"
+)
+
+if (!is.na(depression_var) && depression_var != gds_var) {
+  habshd_type_list <- c(
+    habshd_type_list,
+    list(Depression_Table ~ "dichotomous")
+  )
+
+  habshd_value_list <- c(
+    habshd_value_list,
+    list(Depression_Table ~ "Yes")
+  )
+}
+habshd_table1 <- habshd_table1_data %>%
+  tbl_summary(
+    by = Sex,
+    missing = "no",
+    type = habshd_type_list,
+    value = habshd_value_list,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}%"
+    ),
+    digits = list(
+      all_continuous() ~ 2,
+      all_categorical() ~ 1
+    ),
+    label = habshd_label_list
+  ) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "t.test",
+      all_categorical() ~ "chisq.test"
+    )
+  ) %>%
+  modify_header(
+    label ~ "**Characteristic**",
+    stat_1 ~ "**Female**  \nN = {n}",
+    stat_2 ~ "**Male**  \nN = {n}",
+    p.value ~ "**P value**"
+  )
+## -----------------------------
+## ADGC gtsummary table
+## -----------------------------
+adgc_table1 <- adgc_table1_data %>%
+  tbl_summary(
+    by = Sex,
+    missing = "no",
+    type = list(
+      APOE4 ~ "dichotomous"
+    ),
+    value = list(
+      APOE4 ~ "Positive"
+    ),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}%"
+    ),
+    digits = list(
+      all_continuous() ~ 2,
+      all_categorical() ~ 1
+    ),
+    label = list(
+      Cognitive_Status ~ "ADGC case-control status§",
+      Age ~ "Age",
+      APOE4 ~ "APOE ε4 carrier"
+    )
+  ) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "t.test",
+      all_categorical() ~ "chisq.test"
+    )
+  ) %>%
+  modify_header(
+    label ~ "**Characteristic**",
+    stat_1 ~ "**Female**  \nN = {n}",
+    stat_2 ~ "**Male**  \nN = {n}",
+    p.value ~ "**P value**"
+  )
+## -----------------------------
+## Remove ADGC automatic footnotes only
+## This keeps one set of automatic footnotes from the merged table instead of repeating them twice.
+## -----------------------------
+adgc_table1$table_styling$footnote_header <- adgc_table1$table_styling$footnote_header[0, ]
+adgc_table1$table_styling$footnote_body <- adgc_table1$table_styling$footnote_body[0, ]
+## -----------------------------
+## Merge HABS-HD and ADGC into one Table 1
+## -----------------------------
+combined_table1 <- tbl_merge(
+  tbls = list(
+    habshd_table1,
+    adgc_table1
+  ),
+  tab_spanner = c(
+    "**HABS-HD**",
+    "**ADGC**"
+  )
+) %>%
+  modify_caption(
+    "**Table 1. Baseline characteristics of HABS-HD and ADGC analytic samples, stratified by sex**"
+  )
+table1_note <- paste0(
+  "Values are mean (SD) for continuous variables and percentages for categorical variables. ",
+  "†In HABS-HD, cognitive impairment includes MCI and dementia. ",
+  "‡Physically active reflects the percentage classified in the high-score category. ",
+  "§In ADGC, affected status reflects Alzheimer’s disease case status. ",
+  "APOE ε4 carrier and smoker rows show the percentage in the positive category."
+)
+## -----------------------------
+## Keep only one shared automatic footnote set
+## -----------------------------
+combined_table1$table_styling$footnote_body <- combined_table1$table_styling$footnote_body[0, ]
+## -----------------------------
+## Convert to gt and add clear source note
+## -----------------------------
+combined_table1_gt <- as_gt(combined_table1) %>%
+  gt::tab_source_note(
+    gt::md(table1_note)
+  )
+## -----------------------------
+## Save outputs
+## -----------------------------
+saveRDS(
+  habshd_table1_data,
+  file.path(out_rds_dir, "habshd_table1_data.rds")
+)
+saveRDS(
+  adgc_table1_data,
+  file.path(out_rds_dir, "adgc_table1_data.rds")
+)
+saveRDS(
+  combined_table1,
+  file.path(out_rds_dir, "combined_table1_gtsummary.rds")
+)
+saveRDS(
+  combined_table1_gt,
+  file.path(out_rds_dir, "combined_table1_gt.rds")
+)
+
+## -----------------------------
+## Save DOCX Table 1
+## -----------------------------
+combined_table1_flex <- gtsummary::as_flex_table(combined_table1) %>%
+  flextable::add_footer_lines(
+    values = paste0("Note: ", table1_note)
+  ) %>%
+  flextable::autofit()
+
+flextable::save_as_docx(
+  "Table 1. Baseline characteristics of HABS-HD and ADGC analytic samples, stratified by sex" = combined_table1_flex,
+  path = file.path(out_tbl_dir, "Table1_combined_ADGC_HABSHD_by_sex.docx")
+)
+gt::gtsave(
+  combined_table1_gt,
+  filename = file.path(out_tbl_dir, "Table1_combined_ADGC_HABSHD_by_sex.html")
+)
+gt::gtsave(
+  combined_table1_gt,
+  filename = file.path(out_tbl_dir, "Table1_combined_ADGC_HABSHD_by_sex.rtf")
+)
+combined_xlsx <- file.path(out_tbl_dir, "Table1_combined_ADGC_HABSHD_source_data.xlsx")
+wb <- openxlsx::createWorkbook()
+openxlsx::addWorksheet(wb, "HABSHD_Table1_Data")
+openxlsx::writeData(wb, "HABSHD_Table1_Data", habshd_table1_data)
+openxlsx::addWorksheet(wb, "ADGC_Table1_Data")
+openxlsx::writeData(wb, "ADGC_Table1_Data", adgc_table1_data)
+openxlsx::saveWorkbook(wb, combined_xlsx, overwrite = TRUE)
+combined_table1
+```

@@ -1,0 +1,1463 @@
+---
+title: "HABS-HD PRS phenotype validation"
+subtitle: "Does each PRS recover its expected phenotype, and how do PRSs relate to plasma biomarkers?"
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    df-print: paged
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Report overview
+
+This report evaluates whether each polygenic risk score (PRS) recovers its matched phenotype in HABS-HD and whether these PRSs are associated with Alzheimer’s disease plasma biomarkers. Phenotype validation models are adjusted for age, APOE4 status, race, ancestry principal components, and sex in the combined analysis. Endophenotype analyses use the same covariate structure and test associations with pTau181, pTau217, Aβ42/Aβ40, NfL, and total tau.
+
+## Definitions
+
+- **PRS**: polygenic risk score representing genetic liability for a given trait.
+- **Phenotype validation**: testing whether a PRS predicts the phenotype it is intended to capture.
+- **Endophenotype analysis**: testing whether PRSs are associated with AD-related plasma biomarkers.
+- **Beta coefficient**: standardized effect estimate from a regression model.
+- **Log-odds beta**: logistic regression coefficient for a binary phenotype.
+- **FDR**: false discovery rate-adjusted p-value for multiple testing.
+
+results/
+├── rds/
+│   ├── habshd_prs_validation_base_dataset.rds
+│   ├── habshd_prs_endophenotype_base_dataset.rds
+│   ├── habshd_prs_validation_results.rds
+│   ├── habshd_prs_endophenotype_results.rds
+│   └── habshd_combined_endophenotype_results_table.rds
+│
+├── tables/
+│   ├── habshd_prs_validation_results.csv
+│   ├── habshd_combined_endophenotype_results.csv
+│   ├── habshd_prs_validation_results.html
+│   ├── habshd_combined_endophenotype_results.html
+│   ├── habshd_prs_validation_results.docx
+│   ├── habshd_combined_endophenotype_results.docx
+│   ├── HABSHD_table1_analytic_sample.docx
+│   ├── HABSHD_table1_analytic_sample.rtf
+│   ├── HABSHD_table1_analytic_sample.html
+│   └── HABSHD_PRS_main_results.xlsx
+│
+└── figures/
+    ├── habshd_prs_validation_plot.png
+    ├── habshd_prs_endophenotype_plot.png
+    └── habshd_composite_individual_endophenotype_plot.png
+
+
+```{r setup, include=FALSE}
+.libPaths("/wynton/home/andrews/rakshyasharma/R/rocky8-x86_64-pc-linux-gnu-library/4.4-CBI-gcc13/")
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+library(ggplot2)
+library(gt)
+library(gtsummary)
+library(data.table)
+library(readxl)
+library(stringr)
+has_flextable <- tryCatch(
+  {
+    suppressPackageStartupMessages(requireNamespace("flextable", quietly = TRUE))
+  },
+  error = function(e) {
+    message("flextable could not be loaded. DOCX table exports will be skipped.")
+    FALSE
+  }
+)
+library(openxlsx)
+library(tibble)
+
+options(dplyr.summarise.inform = FALSE)
+theme_set(theme_minimal(base_size = 12, base_family = "Arial"))
+
+habshd_master_df <- readRDS("/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds")
+
+# Shared covariate-complete starting pool for all phenotype-validation models
+base_df <- habshd_master_df %>%
+  dplyr::filter(
+    !is.na(Age),
+    !is.na(APOE4_Positivity),
+    !is.na(Race),
+    !is.na(PC1), !is.na(PC2), !is.na(PC3), !is.na(PC4),
+    !is.na(ID_Gender)
+  )
+
+# Biomarker subset for endophenotype analyses
+base_df_endo <- base_df %>%
+  dplyr::filter(
+    !is.na(ptau181) | !is.na(ptau217) | !is.na(ab42_ab40) | !is.na(nfl) | !is.na(tau)
+  )
+
+composite_endo_results <- readRDS(
+  "/wynton/group/andrews/users/rakshyasharma/PRS/compositePRS/results/rds/endo_results.rds"
+)
+
+out_dir <- "results"
+out_fig_dir <- file.path(out_dir, "figures")
+out_tbl_dir <- file.path(out_dir, "tables")
+out_rds_dir <- file.path(out_dir, "rds")
+
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_tbl_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_rds_dir, recursive = TRUE, showWarnings = FALSE)
+```
+```{r helper, include=FALSE}
+sig_stars <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE ~ ""
+  )
+}
+```
+## Table 1
+
+Table 1 summarizes the baseline characteristics of the HABS-HD analytic sample used as the shared starting dataset for phenotype-validation analyses after applying covariate completeness filters (N = r scales::comma(nrow(base_df))).
+```{r table1}
+habshd_table1_data <- base_df %>%
+  dplyr::transmute(
+    Sex = factor(ID_Gender, levels = c(0, 1), labels = c("Male", "Female")),
+    Cognitive_Impairment = factor(cognitive_impairment, levels = c(0, 1), labels = c("No", "Yes")),
+    Age = Age,
+    Education = ID_Education,
+    Race = factor(Race, levels = c("Black", "Hispanic", "NHW")),
+    APOE4_Positive = factor(APOE4_Positivity, levels = c(1, 0), labels = c("Positive", "Negative")),
+    BMI = OM_BMI,
+    Alcohol_Consumption_Weekly = AUDIT_Total,
+    Smoking = factor(Smoke_binary, levels = c(1, 0), labels = c("Yes", "No")),
+    Type_2_Diabetes = factor(CDX_Diabetes, levels = c(1, 0), labels = c("Yes", "No")),
+    Diastolic_BP = OM_BP_DIA,
+    Systolic_BP = OM_BP_SYS,
+    Pulse_Pressure = Pulse_Pressure,
+    Total_Cholesterol = BW_CholTotal,
+    Major_Depressive_Disorder = factor(CDX_Depression, levels = c(1, 0), labels = c("Yes", "No")),
+    Social_Support = SocialSupport_Total,
+    Triglycerides = BW_Triglycerides,
+    HDL_Cholesterol = BW_HDLChol,
+    LDL_Cholesterol = BW_LDLchol,
+    Physical_Activity = as.numeric(RAPA_1_Total)
+  )
+
+habshd_table1_summary <- habshd_table1_data %>%
+  gtsummary::tbl_summary(
+    by = Sex,
+    statistic = list(
+      gtsummary::all_continuous() ~ "{mean} ({sd})",
+      gtsummary::all_categorical() ~ "{n} / {N} ({p}%)"
+    ),
+    type = list(
+      APOE4_Positive ~ "dichotomous",
+      Physical_Activity ~ "continuous"
+    ),
+    value = list(
+      APOE4_Positive ~ "Positive"
+    ),
+    missing = "no",
+    label = list(
+      Cognitive_Impairment ~ "Cognitive impairment",
+      Age ~ "Age",
+      Education ~ "Education",
+      Race ~ "Race",
+      APOE4_Positive ~ "APOE4 positive",
+      BMI ~ "BMI",
+      Alcohol_Consumption_Weekly ~ "Alcohol consumption (weekly)",
+      Smoking ~ "Smoking",
+      Type_2_Diabetes ~ "Type 2 diabetes",
+      Diastolic_BP ~ "Diastolic blood pressure",
+      Systolic_BP ~ "Systolic blood pressure",
+      Pulse_Pressure ~ "Pulse pressure",
+      Total_Cholesterol ~ "Total cholesterol",
+      Major_Depressive_Disorder ~ "Major depressive disorder",
+      Social_Support ~ "Social support",
+      Triglycerides ~ "Triglycerides",
+      HDL_Cholesterol ~ "HDL cholesterol",
+      LDL_Cholesterol ~ "LDL cholesterol",
+      Physical_Activity ~ "Physical activity"
+    )
+  ) %>%
+  gtsummary::add_overall() %>%
+  gtsummary::modify_caption(
+    "**Table 1. Baseline characteristics of the HABS-HD analytic sample**"
+  ) %>%
+  gtsummary::modify_footnote(
+    update = everything() ~ "Values are mean (SD) for continuous variables and n / N (%) for categorical variables."
+  )
+
+habshd_table1_summary
+```
+```{r validation-specs, include=FALSE}
+validation_specs <- tibble::tribble(
+  ~trait, ~prs_var, ~outcome_var, ~model_type,
+  "BMI", "bmi_score", "OM_BMI", "linear",
+  "Education", "education_score", "ID_Education", "linear",
+  "Alcohol Consumption (weekly)", "alcohol_drinking_weekly_score", "AUDIT_Total", "linear",
+  "Smoking Initiation", "smoking_initiation_score", "Smoke_binary", "logistic",
+  "Type 2 Diabetes", "diabetes_score", "CDX_Diabetes", "logistic",
+  "Diastolic Blood Pressure", "diastolic_blood_pressure_score", "OM_BP_DIA", "linear",
+  "Systolic Blood Pressure", "systolic_blood_pressure_score", "OM_BP_SYS", "linear",
+  "Pulse Pressure", "pulse_pressure_score", "Pulse_Pressure", "linear",
+  "Total Cholesterol", "total_cholesterol_score", "BW_CholTotal", "linear",
+  "Social Isolation", "social_isolation_score", "SocialSupport_Total", "linear",
+  "Triglycerides", "Triglycerides_score", "BW_Triglycerides", "linear",
+  "HDL Cholesterol", "HDL_Cholesterol_score", "BW_HDLChol", "linear",
+  "LDL Cholesterol", "LDL_Cholesterol_score", "BW_LDLchol", "linear",
+  "Physical Activity", "Physical_Activity_score", "RAPA_1_Total", "linear",
+  "Major Depressive Disorder", "Major_Depressive_Disorder_score", "CDX_Depression", "logistic"
+)
+
+get_validation_sample <- function(data, prs_var, outcome_var) {
+  data %>%
+    dplyr::filter(
+      !is.na(.data[[prs_var]]),
+      !is.na(.data[[outcome_var]]),
+      !is.na(Age),
+      !is.na(APOE4_Positivity),
+      !is.na(Race),
+      !is.na(PC1), !is.na(PC2), !is.na(PC3), !is.na(PC4),
+      !is.na(ID_Gender)
+    )
+}
+
+fit_validation_model <- function(data, prs_var, outcome_var, model_type, sex_group = "All", include_sex = TRUE) {
+  model_df <- get_validation_sample(data, prs_var, outcome_var)
+
+  model_df <- model_df %>%
+    dplyr::mutate(
+      Race = factor(Race),
+      APOE4_Positivity = factor(APOE4_Positivity)
+    )
+
+  if (include_sex) {
+    model_df <- model_df %>% dplyr::mutate(ID_Gender = factor(ID_Gender))
+  }
+
+  covars <- c("Age", "APOE4_Positivity", "Race", "PC1", "PC2", "PC3", "PC4")
+  if (include_sex) covars <- c(covars, "ID_Gender")
+
+  keep_covars <- covars[sapply(covars, function(v) {
+    x <- model_df[[v]]
+    if (is.factor(x) || is.character(x)) {
+      dplyr::n_distinct(x[!is.na(x)]) >= 2
+    } else {
+      TRUE
+    }
+  })]
+
+  if (nrow(model_df) == 0) {
+    return(
+      tibble::tibble(
+        term = prs_var,
+        estimate = NA_real_,
+        std.error = NA_real_,
+        statistic = NA_real_,
+        p.value = NA_real_,
+        conf.low = NA_real_,
+        conf.high = NA_real_,
+        effect_type = "Beta",
+        n_total = 0,
+        sex_group = sex_group
+      )
+    )
+  }
+
+  form_txt <- paste(c(prs_var, keep_covars), collapse = " + ")
+
+  if (model_type == "linear") {
+    form <- stats::as.formula(paste0("scale(", outcome_var, ") ~ ", form_txt))
+
+    fit <- tryCatch(
+      stats::lm(form, data = model_df),
+      error = function(e) NULL
+    )
+
+    if (is.null(fit)) {
+      return(
+        tibble::tibble(
+          term = prs_var,
+          estimate = NA_real_,
+          std.error = NA_real_,
+          statistic = NA_real_,
+          p.value = NA_real_,
+          conf.low = NA_real_,
+          conf.high = NA_real_,
+          effect_type = "Beta",
+          n_total = nrow(model_df),
+          sex_group = sex_group
+        )
+      )
+    }
+
+    out <- broom::tidy(fit, conf.int = TRUE) %>%
+      dplyr::filter(term == prs_var) %>%
+      dplyr::mutate(
+        effect_type = "Beta",
+        n_total = nrow(model_df)
+      )
+
+  } else {
+    outcome_vals <- model_df[[outcome_var]]
+
+    if (dplyr::n_distinct(outcome_vals[!is.na(outcome_vals)]) < 2) {
+      return(
+        tibble::tibble(
+          term = prs_var,
+          estimate = NA_real_,
+          std.error = NA_real_,
+          statistic = NA_real_,
+          p.value = NA_real_,
+          conf.low = NA_real_,
+          conf.high = NA_real_,
+          effect_type = "Beta",
+          n_total = nrow(model_df),
+          sex_group = sex_group
+        )
+      )
+    }
+
+    form <- stats::as.formula(paste0(outcome_var, " ~ ", form_txt))
+
+    fit <- tryCatch(
+      stats::glm(form, data = model_df, family = stats::binomial()),
+      error = function(e) NULL
+    )
+
+    if (is.null(fit)) {
+      return(
+        tibble::tibble(
+          term = prs_var,
+          estimate = NA_real_,
+          std.error = NA_real_,
+          statistic = NA_real_,
+          p.value = NA_real_,
+          conf.low = NA_real_,
+          conf.high = NA_real_,
+          effect_type = "Beta",
+          n_total = nrow(model_df),
+          sex_group = sex_group
+        )
+      )
+    }
+
+    coef_tab <- summary(fit)$coefficients
+    zval <- qnorm(0.975)
+
+    if (!(prs_var %in% rownames(coef_tab))) {
+      out <- tibble::tibble(
+        term = prs_var,
+        estimate = NA_real_,
+        std.error = NA_real_,
+        statistic = NA_real_,
+        p.value = NA_real_,
+        conf.low = NA_real_,
+        conf.high = NA_real_,
+        effect_type = "Beta",
+        n_total = nrow(model_df)
+      )
+    } else {
+      beta <- coef_tab[prs_var, "Estimate"]
+      se <- coef_tab[prs_var, "Std. Error"]
+
+      out <- tibble::tibble(
+        term = prs_var,
+        estimate = beta,
+        std.error = se,
+        statistic = coef_tab[prs_var, "z value"],
+        p.value = coef_tab[prs_var, "Pr(>|z|)"],
+        conf.low = beta - zval * se,
+        conf.high = beta + zval * se,
+        effect_type = "Beta",
+        n_total = nrow(model_df)
+      )
+    }
+  }
+
+  out %>% dplyr::mutate(sex_group = sex_group)
+}
+
+validation_results <- purrr::pmap_dfr(
+  validation_specs,
+  function(trait, prs_var, outcome_var, model_type) {
+    fit_validation_model(
+      data = base_df,
+      prs_var = prs_var,
+      outcome_var = outcome_var,
+      model_type = model_type,
+      sex_group = "All",
+      include_sex = TRUE
+    ) %>%
+      dplyr::mutate(
+        Trait = trait,
+        prs_var = prs_var,
+        outcome_var = outcome_var,
+        model_type = model_type
+      )
+  }
+) %>%
+  dplyr::group_by(effect_type) %>%
+  dplyr::mutate(
+    p_adj_fdr = p.adjust(p.value, method = "fdr")
+  ) %>%
+  dplyr::ungroup()
+```
+## PRS phenotype-validation results
+
+Sample size is reported for each trait-specific matched PRS-phenotype model because complete-case sample size varies across outcomes.
+```{r validation-results-table}
+validation_results_table <- validation_results %>%
+  dplyr::mutate(
+    Estimate = sprintf("%.3f (%.3f–%.3f)", estimate, conf.low, conf.high),
+    `P Value` = formatC(p.value, format = "e", digits = 2),
+    FDR = formatC(p_adj_fdr, format = "e", digits = 2)
+  ) %>%
+  dplyr::select(
+    Trait,
+    outcome_var,
+    model_type,
+    n_total,
+    Estimate,
+    `P Value`,
+    FDR
+  ) %>%
+  dplyr::rename(
+    Outcome = outcome_var,
+    Model = model_type,
+    N = n_total
+  ) %>%
+  dplyr::arrange(Trait)
+
+validation_results_table
+```
+
+
+```{r endophenotype-models, include=FALSE}
+endophenotype_specs <- tibble::tribble(
+  ~Biomarker, ~outcome_var,
+  "pTau181", "ptau181",
+  "pTau217", "ptau217",
+  "Aβ42/Aβ40", "ab42_ab40",
+  "NfL", "nfl",
+  "Total Tau", "tau"
+)
+
+fit_endophenotype_model <- function(data, prs_var, outcome_var, sex_group = "All", include_sex = TRUE) {
+  model_df <- data %>%
+    dplyr::filter(
+      !is.na(.data[[prs_var]]),
+      !is.na(.data[[outcome_var]]),
+      !is.na(Age),
+      !is.na(APOE4_Positivity),
+      !is.na(Race),
+      !is.na(PC1), !is.na(PC2), !is.na(PC3), !is.na(PC4)
+    )
+
+  if (include_sex) {
+    model_df <- model_df %>% dplyr::filter(!is.na(ID_Gender))
+  }
+
+  model_df <- model_df %>%
+    dplyr::mutate(
+      Race = factor(Race),
+      APOE4_Positivity = factor(APOE4_Positivity)
+    )
+
+  if (include_sex) {
+    model_df <- model_df %>% dplyr::mutate(ID_Gender = factor(ID_Gender))
+  }
+
+  covars <- c("Age", "APOE4_Positivity", "Race", "PC1", "PC2", "PC3", "PC4")
+  if (include_sex) covars <- c(covars, "ID_Gender")
+
+  keep_covars <- covars[sapply(covars, function(v) {
+    x <- model_df[[v]]
+    if (is.factor(x) || is.character(x)) {
+      dplyr::n_distinct(x[!is.na(x)]) >= 2
+    } else {
+      TRUE
+    }
+  })]
+
+  if (nrow(model_df) == 0) {
+    return(
+      tibble::tibble(
+        term = prs_var,
+        estimate = NA_real_,
+        std.error = NA_real_,
+        statistic = NA_real_,
+        p.value = NA_real_,
+        conf.low = NA_real_,
+        conf.high = NA_real_,
+        n_total = 0,
+        effect_type = "Beta",
+        sex_group = sex_group
+      )
+    )
+  }
+
+  form <- stats::as.formula(
+    paste0(
+      "scale(", outcome_var, ") ~ ",
+      paste(c(prs_var, keep_covars), collapse = " + ")
+    )
+  )
+
+  fit <- tryCatch(
+    stats::lm(form, data = model_df),
+    error = function(e) NULL
+  )
+
+  if (is.null(fit)) {
+    return(
+      tibble::tibble(
+        term = prs_var,
+        estimate = NA_real_,
+        std.error = NA_real_,
+        statistic = NA_real_,
+        p.value = NA_real_,
+        conf.low = NA_real_,
+        conf.high = NA_real_,
+        n_total = nrow(model_df),
+        effect_type = "Beta",
+        sex_group = sex_group
+      )
+    )
+  }
+
+  out <- broom::tidy(fit, conf.int = TRUE) %>%
+    dplyr::filter(term == prs_var) %>%
+    dplyr::mutate(
+      n_total = nrow(model_df),
+      effect_type = "Beta",
+      sex_group = sex_group
+    )
+
+  if (nrow(out) == 0) {
+    out <- tibble::tibble(
+      term = prs_var,
+      estimate = NA_real_,
+      std.error = NA_real_,
+      statistic = NA_real_,
+      p.value = NA_real_,
+      conf.low = NA_real_,
+      conf.high = NA_real_,
+      n_total = nrow(model_df),
+      effect_type = "Beta",
+      sex_group = sex_group
+    )
+  }
+
+  out
+}
+
+final_df_endo_all <- base_df_endo
+final_df_endo_male <- base_df_endo %>% dplyr::filter(ID_Gender == 0)
+final_df_endo_female <- base_df_endo %>% dplyr::filter(ID_Gender == 1)
+
+all_endophenotype_prs <- c(
+  "bmi_score",
+  "education_score",
+  "alcohol_drinking_weekly_score",
+  "smoking_initiation_score",
+  "diabetes_score",
+  "diastolic_blood_pressure_score",
+  "systolic_blood_pressure_score",
+  "pulse_pressure_score",
+  "total_cholesterol_score",
+  "social_isolation_score",
+  "Hearing_Loss_score",
+  "Vision_Loss_score",
+  "Triglycerides_score",
+  "HDL_Cholesterol_score",
+  "LDL_Cholesterol_score",
+  "Physical_Activity_score",
+  "Major_Depressive_Disorder_score"
+)
+
+endo_grid <- tidyr::crossing(
+  prs_var = all_endophenotype_prs,
+  outcome_var = endophenotype_specs$outcome_var
+)
+
+prs_name_lookup <- c(
+  "bmi_score" = "BMI",
+  "education_score" = "Education",
+  "alcohol_drinking_weekly_score" = "Alcohol Consumption (weekly)",
+  "smoking_initiation_score" = "Smoking Initiation",
+  "diabetes_score" = "Type 2 Diabetes",
+  "diastolic_blood_pressure_score" = "Diastolic Blood Pressure",
+  "systolic_blood_pressure_score" = "Systolic Blood Pressure",
+  "pulse_pressure_score" = "Pulse Pressure",
+  "total_cholesterol_score" = "Total Cholesterol",
+  "social_isolation_score" = "Social Isolation",
+  "Hearing_Loss_score" = "Hearing Loss",
+  "Vision_Loss_score" = "Vision Loss",
+  "Triglycerides_score" = "Triglycerides",
+  "HDL_Cholesterol_score" = "HDL Cholesterol",
+  "LDL_Cholesterol_score" = "LDL Cholesterol",
+  "Physical_Activity_score" = "Physical Activity",
+  "Major_Depressive_Disorder_score" = "Major Depressive Disorder"
+)
+
+get_trait_name <- function(prs_var_value) {
+  unname(prs_name_lookup[prs_var_value])
+}
+
+get_biomarker_name <- function(outcome_var_value) {
+  endophenotype_specs$Biomarker[match(outcome_var_value, endophenotype_specs$outcome_var)]
+}
+
+endophenotype_results <- dplyr::bind_rows(
+  purrr::pmap_dfr(
+    endo_grid,
+    function(prs_var, outcome_var) {
+      fit_endophenotype_model(
+        final_df_endo_all,
+        prs_var,
+        outcome_var,
+        sex_group = "All",
+        include_sex = TRUE
+      ) %>%
+        dplyr::mutate(
+          trait = stringr::str_remove(prs_var, "_score$"),
+          Trait = get_trait_name(prs_var),
+          prs_var = prs_var,
+          outcome_var = outcome_var,
+          Biomarker = get_biomarker_name(outcome_var),
+          estimate_type = "Beta"
+        )
+    }
+  ),
+  purrr::pmap_dfr(
+    endo_grid,
+    function(prs_var, outcome_var) {
+      fit_endophenotype_model(
+        final_df_endo_male,
+        prs_var,
+        outcome_var,
+        sex_group = "Male",
+        include_sex = FALSE
+      ) %>%
+        dplyr::mutate(
+          trait = stringr::str_remove(prs_var, "_score$"),
+          Trait = get_trait_name(prs_var),
+          prs_var = prs_var,
+          outcome_var = outcome_var,
+          Biomarker = get_biomarker_name(outcome_var),
+          estimate_type = "Beta"
+        )
+    }
+  ),
+  purrr::pmap_dfr(
+    endo_grid,
+    function(prs_var, outcome_var) {
+      fit_endophenotype_model(
+        final_df_endo_female,
+        prs_var,
+        outcome_var,
+        sex_group = "Female",
+        include_sex = FALSE
+      ) %>%
+        dplyr::mutate(
+          trait = stringr::str_remove(prs_var, "_score$"),
+          Trait = get_trait_name(prs_var),
+          prs_var = prs_var,
+          outcome_var = outcome_var,
+          Biomarker = get_biomarker_name(outcome_var),
+          estimate_type = "Beta"
+        )
+    }
+  )
+) %>%
+  dplyr::group_by(outcome_var, sex_group) %>%
+  dplyr::mutate(
+    p_adj_fdr = p.adjust(p.value, method = "fdr"),
+    p_adj_bonf = p.adjust(p.value, method = "bonferroni"),
+    significant_fdr = p_adj_fdr < 0.05,
+    significant_bonf = p_adj_bonf < 0.05
+  ) %>%
+  dplyr::ungroup()
+
+endophenotype_results
+
+endophenotype_results %>%
+  dplyr::count(Trait, Biomarker, sex_group)
+```
+## Plasma biomarker endophenotype results
+
+PRS-biomarker association analyses were performed in the biomarker-merged subset of r scales::comma(nrow(base_df_endo)) participants. Sample size is shown for each row because complete-case sample size can vary by PRS, biomarker, and sex stratum.
+
+
+```{r endophenotype-results-table}
+individual_endo_results_table <- endophenotype_results %>%
+  dplyr::mutate(
+    Analysis = "Individual PRS",
+    Group = dplyr::case_when(
+      sex_group == "All" ~ "Total",
+      TRUE ~ sex_group
+    ),
+    N = n_total,
+    `Estimate (95% CI)` = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high),
+    `P value` = formatC(p.value, format = "e", digits = 2),
+    FDR = formatC(p_adj_fdr, format = "e", digits = 2)
+  ) %>%
+  dplyr::select(
+    Biomarker,
+    Analysis,
+    Group,
+    Trait,
+    N,
+    `Estimate (95% CI)`,
+    `P value`,
+    FDR
+  )
+
+# determine whether composite_endo_results contains a sample-size column
+composite_n_col <- dplyr::case_when(
+  "n_total" %in% names(composite_endo_results) ~ "n_total",
+  "N" %in% names(composite_endo_results) ~ "N",
+  TRUE ~ NA_character_
+)
+
+if (is.na(composite_n_col)) {
+  composite_endo_results_table <- composite_endo_results %>%
+    dplyr::transmute(
+      Biomarker = dplyr::case_when(
+        outcome %in% c("ptau181", "pTau181") ~ "pTau181",
+        outcome %in% c("ptau217", "pTau217") ~ "pTau217",
+        outcome %in% c("ab42_ab40", "Aβ42/Aβ40") ~ "Aβ42/Aβ40",
+        outcome %in% c("nfl", "NfL") ~ "NfL",
+        outcome %in% c("tau", "Total Tau") ~ "Total Tau",
+        TRUE ~ as.character(outcome)
+      ),
+      Analysis = "Composite PRS",
+      Group = dplyr::case_when(
+        group == "Total" ~ "Total",
+        TRUE ~ as.character(group)
+      ),
+      Trait = "Composite PRS",
+      N = NA_real_,
+      `Estimate (95% CI)` = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high),
+      `P value` = formatC(p.value, format = "e", digits = 2),
+      FDR = formatC(p_adj_fdr, format = "e", digits = 2)
+    )
+} else {
+  composite_endo_results_table <- composite_endo_results %>%
+    dplyr::transmute(
+      Biomarker = dplyr::case_when(
+        outcome %in% c("ptau181", "pTau181") ~ "pTau181",
+        outcome %in% c("ptau217", "pTau217") ~ "pTau217",
+        outcome %in% c("ab42_ab40", "Aβ42/Aβ40") ~ "Aβ42/Aβ40",
+        outcome %in% c("nfl", "NfL") ~ "NfL",
+        outcome %in% c("tau", "Total Tau") ~ "Total Tau",
+        TRUE ~ as.character(outcome)
+      ),
+      Analysis = "Composite PRS",
+      Group = dplyr::case_when(
+        group == "Total" ~ "Total",
+        TRUE ~ as.character(group)
+      ),
+      Trait = "Composite PRS",
+      N = .data[[composite_n_col]],
+      `Estimate (95% CI)` = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high),
+      `P value` = formatC(p.value, format = "e", digits = 2),
+      FDR = formatC(p_adj_fdr, format = "e", digits = 2)
+    )
+}
+
+endophenotype_results_table <- dplyr::bind_rows(
+  individual_endo_results_table,
+  composite_endo_results_table
+) %>%
+  dplyr::mutate(
+    Biomarker = factor(Biomarker, levels = c("NfL", "pTau181", "pTau217", "Aβ42/Aβ40", "Total Tau")),
+    Analysis = factor(Analysis, levels = c("Individual PRS", "Composite PRS")),
+    Group = factor(Group, levels = c("Total", "Male", "Female"))
+  ) %>%
+  dplyr::arrange(Biomarker, Analysis, Group, Trait)
+
+endophenotype_results_table
+```
+```{r, include=FALSE}
+individual_endo_plot_df <- endophenotype_results %>%
+  dplyr::transmute(
+    analysis_type = "Individual PRS",
+    panel_label = Trait,
+    Biomarker = Biomarker,
+    estimate = estimate,
+    conf.low = conf.low,
+    conf.high = conf.high,
+    sex_group = sex_group,
+    p.value = p.value,
+    p_adj_fdr = p_adj_fdr
+  )
+
+composite_endo_plot_df <- composite_endo_results %>%
+  dplyr::transmute(
+    analysis_type = "Composite PRS",
+    panel_label = "Composite PRS",
+    Biomarker = dplyr::case_when(
+      outcome %in% c("ptau181", "pTau181") ~ "pTau181",
+      outcome %in% c("ptau217", "pTau217") ~ "pTau217",
+      outcome %in% c("ab42_ab40", "Aβ42/Aβ40") ~ "Aβ42/Aβ40",
+      outcome %in% c("nfl", "NfL") ~ "NfL",
+      outcome %in% c("tau", "Total Tau") ~ "Total Tau",
+      TRUE ~ as.character(outcome)
+    ),
+    estimate = estimate,
+    conf.low = conf.low,
+    conf.high = conf.high,
+    sex_group = dplyr::case_when(
+      group == "Total" ~ "All",
+      TRUE ~ as.character(group)
+    ),
+    p.value = p.value,
+    p_adj_fdr = p_adj_fdr
+  )
+panel_order <- c(
+  unique(as.character(individual_endo_plot_df$panel_label)),
+  "Composite PRS"
+)
+
+combined_endo_plot_df <- dplyr::bind_rows(
+  individual_endo_plot_df,
+  composite_endo_plot_df
+) %>%
+  dplyr::mutate(
+    Biomarker = factor(Biomarker, levels = c("NfL", "Total Tau", "pTau181", "pTau217", "Aβ42/Aβ40")),
+    sex_group = factor(sex_group, levels = c("All", "Male", "Female")),
+    sig_raw = ifelse(p.value < 0.05, "P < 0.05", "NS"),
+    panel_label = factor(panel_label, levels = panel_order)
+  )
+```
+```{r validation-plot, include = FALSE}
+validation_trait_order <- validation_results %>%
+  dplyr::filter(
+    sex_group == "All",
+    !is.na(estimate)
+  ) %>%
+  dplyr::arrange(estimate) %>%
+  dplyr::pull(Trait)
+
+validation_plot_df <- validation_results %>%
+  dplyr::filter(
+    !is.na(estimate),
+    !is.na(conf.low),
+    !is.na(conf.high)
+  ) %>%
+  dplyr::mutate(
+    sex_group = factor(sex_group, levels = c("All", "Male", "Female")),
+    Trait = factor(Trait, levels = validation_trait_order)
+  )
+
+p_validation <- ggplot(
+  validation_plot_df,
+  aes(
+    x = estimate,
+    y = Trait,
+    xmin = conf.low,
+    xmax = conf.high,
+    color = sex_group
+  )
+) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "black",
+    linewidth = 0.8
+  ) +
+  geom_pointrange(
+    position = position_dodge(width = 0.6),
+    size = 0.8
+  ) +
+  scale_color_manual(values = c("All" = "darkgreen", "Male" = "blue", "Female" = "deeppink")) +
+  labs(
+    x = "Effect estimate (beta)",
+    y = "Trait",
+    color = "Group"
+  #  title = "HABS-HD PRS phenotype validation"
+  ) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(size = 14, hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+p_validation
+```
+
+The phenotype-validation figure displays `r nrow(validation_plot_df)` plotted overall-model results after excluding rows with missing effect estimates or confidence intervals.
+```{r endophenotype-plot, include = FALSE}
+endophenotype_plot_df <- endophenotype_results %>%
+  dplyr::filter(
+    estimate_type == "Beta",
+    outcome_var %in% c("ptau181", "ptau217", "ab42_ab40", "nfl", "tau")
+  ) %>%
+  dplyr::mutate(
+    outcome_label = dplyr::case_when(
+      outcome_var == "ptau181" ~ "pTau181",
+      outcome_var == "ptau217" ~ "pTau217",
+      outcome_var == "ab42_ab40" ~ "Aβ42/Aβ40",
+      outcome_var == "nfl" ~ "NfL",
+      outcome_var == "tau" ~ "Total Tau",
+      TRUE ~ outcome_var
+    ),
+    trait_label = dplyr::case_when(
+      trait == "bmi" ~ "BMI",
+      trait == "education" ~ "Education",
+      trait == "diabetes" ~ "Diabetes",
+      trait == "systolic_blood_pressure" ~ "Systolic BP",
+      trait == "diastolic_blood_pressure" ~ "Diastolic BP",
+      trait == "pulse_pressure" ~ "Pulse Pressure",
+      trait == "total_cholesterol" ~ "Total Cholesterol",
+      trait == "HDL_Cholesterol" ~ "HDL Cholesterol",
+      trait == "LDL_Cholesterol" ~ "LDL Cholesterol",
+      trait == "Triglycerides" ~ "Triglycerides",
+      trait == "smoking_initiation" ~ "Smoking Initiation",
+      trait == "social_isolation" ~ "Social Isolation",
+      trait == "Hearing_Loss" ~ "Hearing Loss",
+      trait == "Vision_Loss" ~ "Vision Loss",
+      trait == "Physical_Activity" ~ "Physical Activity",
+      trait == "Major_Depressive_Disorder" ~ "Major Depression",
+      TRUE ~ trait
+    ),
+sig_raw = ifelse(p.value < 0.05, "P < 0.05", "NS"),
+sex_group = factor(sex_group, levels = c("All", "Male", "Female"))
+  )
+
+endophenotype_plot_df$outcome_label <- factor(
+  endophenotype_plot_df$outcome_label,
+  levels = c("NfL", "Total Tau", "pTau181", "pTau217", "Aβ42/Aβ40")
+)
+
+p_endophenotype <- ggplot(
+  endophenotype_plot_df,
+  aes(
+    x = outcome_label,
+    y = estimate,
+    ymin = conf.low,
+    ymax = conf.high,
+    color = sex_group,
+    alpha = sig_raw
+  )
+) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_pointrange(
+    position = position_dodge(width = 0.55),
+    size = 0.5
+  ) +
+  facet_wrap(~ trait_label, ncol = 4) +
+  scale_color_manual(values = c("Male" = "blue", "Female" = "deeppink", "All" = "darkgreen")) +
+  scale_alpha_manual(values = c("P < 0.05" = 1, "NS" = 0.3)) +
+  labs(
+    x = NULL,
+    y = "Beta (95% CI)",
+    color = "Group",
+    title = "PRS Associations with Plasma Biomarkers"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+```
+```{r combined-endo-plot, include = FALSE}
+p_combined_endo <- ggplot(
+  combined_endo_plot_df,
+  aes(
+    x = Biomarker,
+    y = estimate,
+    ymin = conf.low,
+    ymax = conf.high,
+    color = sex_group,
+    alpha = sig_raw
+  )
+) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_pointrange(
+    position = position_dodge(width = 0.55),
+    size = 0.5
+  ) +
+  facet_wrap(~ panel_label, ncol = 4) +
+  scale_color_manual(values = c("Male" = "blue", "Female" = "deeppink", "All" = "darkgreen")) +
+  scale_alpha_manual(values = c("P < 0.05" = 1, "NS" = 0.3)) +
+  labs(
+    x = NULL,
+    y = "Beta (95% CI)",
+    color = "Group",
+    alpha = NULL
+   # title = "Composite and Individual PRS Associations with Plasma Biomarkers"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+p_combined_endo
+```
+```{r docx-table-objects, include=FALSE}
+if (has_flextable) {
+  validation_results_flex <- flextable::flextable(validation_results_table) %>%
+    flextable::autofit()
+
+  endophenotype_results_flex <- flextable::flextable(endophenotype_results_table) %>%
+    flextable::autofit()
+}
+```
+
+```{r exports, include=FALSE}
+validation_results_gt <- gt::gt(validation_results_table) %>%
+  gt::tab_header(
+    title = "PRS phenotype-validation results"
+  )
+
+endophenotype_results_gt <- gt::gt(endophenotype_results_table) %>%
+  gt::tab_header(
+    title = "Associations of individual and composite PRSs with plasma AD endophenotypes in HABS-HD"
+  )
+
+# Save RDS
+saveRDS(base_df, file.path(out_rds_dir, "habshd_prs_validation_base_dataset.rds"))
+saveRDS(base_df_endo, file.path(out_rds_dir, "habshd_prs_endophenotype_base_dataset.rds"))
+saveRDS(validation_results, file.path(out_rds_dir, "habshd_prs_validation_results.rds"))
+saveRDS(endophenotype_results, file.path(out_rds_dir, "habshd_prs_endophenotype_results.rds"))
+saveRDS(endophenotype_results_table, file.path(out_rds_dir, "habshd_combined_endophenotype_results_table.rds"))
+
+# Save CSV
+write.csv(
+  validation_results_table,
+  file.path(out_tbl_dir, "habshd_prs_validation_results.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  endophenotype_results_table,
+  file.path(out_tbl_dir, "habshd_combined_endophenotype_results.csv"),
+  row.names = FALSE
+)
+
+# Save HTML / RTF
+gt::gtsave(
+  validation_results_gt,
+  filename = file.path(out_tbl_dir, "habshd_prs_validation_results.html")
+)
+
+gt::gtsave(
+  endophenotype_results_gt,
+  filename = file.path(out_tbl_dir, "habshd_combined_endophenotype_results.html")
+)
+
+
+# Save DOCX tables
+if (has_flextable) {
+  flextable::save_as_docx(
+    "PRS phenotype-validation results" = validation_results_flex,
+    path = file.path(out_tbl_dir, "habshd_prs_validation_results.docx")
+  )
+
+  flextable::save_as_docx(
+    "Table 3. Associations of individual and composite polygenic risk scores with plasma Alzheimer’s disease endophenotypes in HABS-HD total sample and in sex-stratified analyses" = endophenotype_results_flex,
+    path = file.path(out_tbl_dir, "habshd_combined_endophenotype_results.docx")
+  )
+} else {
+  message("Skipping DOCX exports because flextable is unavailable.")
+}
+
+
+
+# Save figures
+ggsave(
+  filename = file.path(out_fig_dir, "habshd_prs_validation_plot.png"),
+  plot = p_validation,
+  width = 12,
+  height = 10,
+  dpi = 600
+)
+
+ggsave(
+  filename = file.path(out_fig_dir, "habshd_prs_endophenotype_plot.png"),
+  plot = p_endophenotype,
+  width = 14,
+  height = 12,
+  dpi = 600
+)
+
+ggsave(
+  filename = file.path(out_fig_dir, "habshd_composite_individual_endophenotype_plot.png"),
+  plot = p_combined_endo,
+  width = 14,
+  height = 12,
+  dpi = 600
+)
+
+# Save 2-sheet Excel workbook
+xlsx_file <- file.path(out_tbl_dir, "HABSHD_PRS_main_results.xlsx")
+
+wb <- openxlsx::createWorkbook()
+
+openxlsx::addWorksheet(wb, "PRS_validation")
+openxlsx::writeData(wb, "PRS_validation", validation_results_table)
+
+openxlsx::addWorksheet(wb, "Endophenotypes")
+openxlsx::writeData(wb, "Endophenotypes", endophenotype_results_table)
+
+openxlsx::setColWidths(wb, "PRS_validation", cols = 1:ncol(validation_results_table), widths = "auto")
+openxlsx::setColWidths(wb, "Endophenotypes", cols = 1:ncol(endophenotype_results_table), widths = "auto")
+
+openxlsx::freezePane(wb, "PRS_validation", firstRow = TRUE)
+openxlsx::freezePane(wb, "Endophenotypes", firstRow = TRUE)
+
+openxlsx::saveWorkbook(wb, xlsx_file, overwrite = TRUE)
+
+# Row-count check for individual endophenotype models only
+expected_n_endo <- length(all_endophenotype_prs) * nrow(endophenotype_specs) * 3
+actual_n_endo <- nrow(endophenotype_results)
+
+stopifnot(actual_n_endo == expected_n_endo)
+```
+
+
+```{r, include=FALSE}
+if (has_flextable) {
+  habshd_table1_flex <- gtsummary::as_flex_table(habshd_table1_summary) %>%
+    flextable::autofit()
+
+  flextable::save_as_docx(
+    "Table 1. Baseline characteristics of the HABS-HD analytic sample" = habshd_table1_flex,
+    path = file.path(out_tbl_dir, "HABSHD_table1_analytic_sample.docx")
+  )
+} else {
+  message("Skipping Table 1 DOCX export because flextable is unavailable.")
+}
+
+gt::gtsave(
+  as_gt(habshd_table1_summary),
+  filename = file.path(out_tbl_dir, "HABSHD_table1_analytic_sample.rtf")
+)
+
+gt::gtsave(
+  as_gt(habshd_table1_summary),
+  filename = file.path(out_tbl_dir, "HABSHD_table1_analytic_sample.html")
+)
+```
+```{r workbook-export, include=FALSE}
+library(openxlsx)
+library(dplyr)
+
+sig_stars <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE ~ ""
+  )
+}
+
+# =========================
+# SHEET 1: PRS VALIDATION
+# =========================
+validation_sheet <- validation_results %>%
+  dplyr::mutate(
+    Group = dplyr::case_when(
+      sex_group == "All" ~ "Total",
+      TRUE ~ sex_group
+    ),
+    N = n_total,
+    `Estimate (95% CI)` = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high),
+    `P value` = paste0(formatC(p.value, format = "e", digits = 2), sig_stars(p.value)),
+    FDR = paste0(formatC(p_adj_fdr, format = "e", digits = 2), sig_stars(p_adj_fdr)),
+    p_sig = !is.na(p.value) & p.value < 0.05,
+    fdr_sig = !is.na(p_adj_fdr) & p_adj_fdr < 0.05
+  ) %>%
+  dplyr::transmute(
+    Group,
+    Trait,
+    Outcome = outcome_var,
+    Model = model_type,
+    N,
+    `Estimate (95% CI)`,
+    `P value`,
+    FDR,
+    p_sig,
+    fdr_sig
+  ) %>%
+  dplyr::arrange(Group, Trait)
+
+validation_write <- validation_sheet %>%
+  dplyr::select(-p_sig, -fdr_sig)
+
+# =========================
+# SHEET 2: ENDOPHENOTYPES
+# =========================
+individual_endo_sheet <- endophenotype_results %>%
+  dplyr::mutate(
+    Analysis = "Individual PRS",
+    Group = dplyr::case_when(
+      sex_group == "All" ~ "Total",
+      TRUE ~ sex_group
+    ),
+    N = n_total,
+    `Estimate (95% CI)` = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high),
+    `P value` = paste0(formatC(p.value, format = "e", digits = 2), sig_stars(p.value)),
+    FDR = paste0(formatC(p_adj_fdr, format = "e", digits = 2), sig_stars(p_adj_fdr)),
+    p_sig = !is.na(p.value) & p.value < 0.05,
+    fdr_sig = !is.na(p_adj_fdr) & p_adj_fdr < 0.05
+  ) %>%
+  dplyr::transmute(
+    Biomarker,
+    Analysis,
+    Group,
+    Trait,
+    N,
+    `Estimate (95% CI)`,
+    `P value`,
+    FDR,
+    p_sig,
+    fdr_sig
+  )
+
+# handle composite PRS N safely
+composite_n_col <- dplyr::case_when(
+  "n_total" %in% names(composite_endo_results) ~ "n_total",
+  "N" %in% names(composite_endo_results) ~ "N",
+  TRUE ~ NA_character_
+)
+
+if (is.na(composite_n_col)) {
+  composite_endo_sheet <- composite_endo_results %>%
+    dplyr::transmute(
+      Biomarker = dplyr::case_when(
+        outcome %in% c("ptau181", "pTau181") ~ "pTau181",
+        outcome %in% c("ptau217", "pTau217") ~ "pTau217",
+        outcome %in% c("ab42_ab40", "Aβ42/Aβ40") ~ "Aβ42/Aβ40",
+        outcome %in% c("nfl", "NfL") ~ "NfL",
+        outcome %in% c("tau", "Total Tau") ~ "Total Tau",
+        TRUE ~ as.character(outcome)
+      ),
+      Analysis = "Composite PRS",
+      Group = dplyr::case_when(
+        group == "Total" ~ "Total",
+        TRUE ~ as.character(group)
+      ),
+      Trait = "Composite PRS",
+      N = NA_real_,
+      `Estimate (95% CI)` = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high),
+      `P value` = paste0(formatC(p.value, format = "e", digits = 2), sig_stars(p.value)),
+      FDR = paste0(formatC(p_adj_fdr, format = "e", digits = 2), sig_stars(p_adj_fdr)),
+      p_sig = !is.na(p.value) & p.value < 0.05,
+      fdr_sig = !is.na(p_adj_fdr) & p_adj_fdr < 0.05
+    )
+} else {
+  composite_endo_sheet <- composite_endo_results %>%
+    dplyr::transmute(
+      Biomarker = dplyr::case_when(
+        outcome %in% c("ptau181", "pTau181") ~ "pTau181",
+        outcome %in% c("ptau217", "pTau217") ~ "pTau217",
+        outcome %in% c("ab42_ab40", "Aβ42/Aβ40") ~ "Aβ42/Aβ40",
+        outcome %in% c("nfl", "NfL") ~ "NfL",
+        outcome %in% c("tau", "Total Tau") ~ "Total Tau",
+        TRUE ~ as.character(outcome)
+      ),
+      Analysis = "Composite PRS",
+      Group = dplyr::case_when(
+        group == "Total" ~ "Total",
+        TRUE ~ as.character(group)
+      ),
+      Trait = "Composite PRS",
+      N = .data[[composite_n_col]],
+      `Estimate (95% CI)` = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high),
+      `P value` = paste0(formatC(p.value, format = "e", digits = 2), sig_stars(p.value)),
+      FDR = paste0(formatC(p_adj_fdr, format = "e", digits = 2), sig_stars(p_adj_fdr)),
+      p_sig = !is.na(p.value) & p.value < 0.05,
+      fdr_sig = !is.na(p_adj_fdr) & p_adj_fdr < 0.05
+    )
+}
+
+endo_sheet <- dplyr::bind_rows(individual_endo_sheet, composite_endo_sheet) %>%
+  dplyr::mutate(
+    Biomarker = factor(Biomarker, levels = c("NfL", "pTau181", "pTau217", "Aβ42/Aβ40", "Total Tau")),
+    Analysis = factor(Analysis, levels = c("Individual PRS", "Composite PRS")),
+    Group = factor(Group, levels = c("Total", "Male", "Female"))
+  ) %>%
+  dplyr::arrange(Biomarker, Analysis, Group, Trait)
+
+# =========================
+# BUILD WORKBOOK
+# =========================
+xlsx_file <- file.path(out_tbl_dir, "HABSHD_PRS_main_results.xlsx")
+
+wb <- openxlsx::createWorkbook()
+
+header_style <- openxlsx::createStyle(
+  textDecoration = "bold",
+  fgFill = "#D9EAF7",
+  halign = "center",
+  border = "Bottom"
+)
+
+section_style <- openxlsx::createStyle(
+  textDecoration = "bold",
+  fgFill = "#BDD7EE",
+  fontSize = 12
+)
+
+bold_style <- openxlsx::createStyle(
+  textDecoration = "bold"
+)
+
+# -------------------------
+# SHEET 1: PRS_validation
+# -------------------------
+openxlsx::addWorksheet(wb, "PRS_validation")
+
+openxlsx::writeData(
+  wb, "PRS_validation", validation_write,
+  startRow = 1, startCol = 1, withFilter = TRUE
+)
+
+openxlsx::addStyle(
+  wb, "PRS_validation", header_style,
+  rows = 1, cols = 1:ncol(validation_write),
+  gridExpand = TRUE, stack = TRUE
+)
+
+p_col_val <- which(names(validation_write) == "P value")
+p_sig_rows_val <- which(validation_sheet$p_sig) + 1
+if (length(p_sig_rows_val) > 0) {
+  openxlsx::addStyle(
+    wb, "PRS_validation", bold_style,
+    rows = p_sig_rows_val, cols = p_col_val,
+    gridExpand = TRUE, stack = TRUE
+  )
+}
+
+fdr_col_val <- which(names(validation_write) == "FDR")
+fdr_sig_rows_val <- which(validation_sheet$fdr_sig) + 1
+if (length(fdr_sig_rows_val) > 0) {
+  openxlsx::addStyle(
+    wb, "PRS_validation", bold_style,
+    rows = fdr_sig_rows_val, cols = fdr_col_val,
+    gridExpand = TRUE, stack = TRUE
+  )
+}
+
+openxlsx::setColWidths(
+  wb, "PRS_validation",
+  cols = 1:ncol(validation_write),
+  widths = c(12, 30, 22, 12, 10, 24, 14, 14)
+)
+
+openxlsx::freezePane(wb, "PRS_validation", firstRow = TRUE)
+
+# -------------------------
+# SHEET 2: Endophenotypes
+# -------------------------
+openxlsx::addWorksheet(wb, "Endophenotypes")
+
+current_row <- 1
+biomarker_levels <- levels(endo_sheet$Biomarker)
+
+for (bio in biomarker_levels) {
+  block <- endo_sheet %>%
+    dplyr::filter(Biomarker == bio)
+
+  if (nrow(block) == 0) next
+
+  block_write <- block %>%
+    dplyr::select(
+      Analysis, Group, Trait, N,
+      `Estimate (95% CI)`, `P value`, FDR
+    )
+
+  openxlsx::writeData(wb, "Endophenotypes", bio, startRow = current_row, startCol = 1)
+  openxlsx::mergeCells(wb, "Endophenotypes", cols = 1:7, rows = current_row)
+  openxlsx::addStyle(
+    wb, "Endophenotypes", section_style,
+    rows = current_row, cols = 1, stack = TRUE
+  )
+
+  openxlsx::writeData(
+    wb, "Endophenotypes", block_write,
+    startRow = current_row + 1, startCol = 1
+  )
+
+  openxlsx::addStyle(
+    wb, "Endophenotypes", header_style,
+    rows = current_row + 1, cols = 1:7,
+    gridExpand = TRUE, stack = TRUE
+  )
+
+  p_rows_block <- which(block$p_sig) + current_row + 1
+  if (length(p_rows_block) > 0) {
+    openxlsx::addStyle(
+      wb, "Endophenotypes", bold_style,
+      rows = p_rows_block, cols = 6,
+      gridExpand = TRUE, stack = TRUE
+    )
+  }
+
+  fdr_rows_block <- which(block$fdr_sig) + current_row + 1
+  if (length(fdr_rows_block) > 0) {
+    openxlsx::addStyle(
+      wb, "Endophenotypes", bold_style,
+      rows = fdr_rows_block, cols = 7,
+      gridExpand = TRUE, stack = TRUE
+    )
+  }
+
+  current_row <- current_row + nrow(block_write) + 4
+}
+
+openxlsx::setColWidths(
+  wb, "Endophenotypes",
+  cols = 1:7,
+  widths = c(18, 12, 30, 10, 24, 14, 14)
+)
+
+openxlsx::freezePane(wb, "Endophenotypes", firstRow = TRUE)
+
+openxlsx::saveWorkbook(wb, xlsx_file, overwrite = TRUE)
+```
+
+## Summary of analytic inputs and generated outputs
+
+```{mermaid}
+flowchart LR
+
+  A["HABS-HD master dataset<br/>habshd_master_df.rds"] --> B["Covariate-complete sample<br/>base_df"]
+  A --> C["Biomarker subset<br/>base_df_endo"]
+
+  B --> D["Table 1<br/>Baseline characteristics"]
+  B --> E["PRS phenotype validation<br/>Matched PRS-phenotype models"]
+
+  C --> F["Individual PRS endophenotype models<br/>PRS × biomarker × group"]
+  G["Composite PRS endophenotype results<br/>endo_results.rds"] --> H["Combined endophenotype table"]
+
+  F --> H
+  E --> I["Validation result table and forest plot"]
+  H --> J["Endophenotype result table and plots"]
+
+  D --> K["Exported Table 1<br/>DOCX, HTML, RTF"]
+  I --> L["Exported validation outputs<br/>RDS, CSV, HTML, DOCX, PNG, Excel"]
+  J --> M["Exported endophenotype outputs<br/>RDS, CSV, HTML, DOCX, PNG, Excel"]
+```

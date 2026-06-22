@@ -1,0 +1,39 @@
+# R session files
+.RData
+.Rhistory
+.Rproj.user/
+
+# Logs
+logs/
+*.log
+*.out
+*.err
+
+# Generated outputs
+results/
+output/
+outputs/
+tmp/
+temp/
+.cache/
+
+# Large/private genomic files
+*.bed
+*.bim
+*.fam
+*.pgen
+*.pvar
+*.psam
+*.bgen
+*.sample
+*.vcf
+*.vcf.gz
+*.tsv.gz
+*.txt.gz
+*.sumstats.gz
+*.rds
+*.RDS
+
+# Existing separate repos
+MR/
+PRS-CS-Auto/

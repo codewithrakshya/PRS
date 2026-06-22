@@ -1,0 +1,102 @@
+---
+title: "visuals"
+output: html_document
+---
+
+```{r}
+getwd()
+#!/usr/bin/env Rscript
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+library(stringr)
+
+# ---- Load data ----
+df1 <- read.table("/wynton/group/andrews/users/rakshyasharma/genetic_correlations/results/genetic_correlations_RS/ldsc/20251107/all_results_ldsc.tsv", header = TRUE, sep = "\t", fill = TRUE, quote = "")
+df2 <- read.table("/wynton/group/andrews/users/rakshyasharma/genetic_correlations/results/genetic_correlations_NealeEdu_Alzheimers/ldsc/20251107/all_results_ldsc.tsv", header = TRUE, sep = "\t", fill = TRUE, quote = "")
+
+
+# Combine
+df <- bind_rows(df1, df2)
+
+# ---- Keep only scientifically relevant comparisons ----
+df <- df %>%
+  filter(
+    grepl("Okbay|NealeEdu", p1) & grepl("Belloy|NealeEdu", p2)
+  )
+
+# ---- Clean file names ----
+df$p1 <- basename(df$p1)
+df$p2 <- basename(df$p2)
+
+df <- df %>%
+  mutate(
+    p1_label = case_when(
+      grepl("Okbay2022educ", df$p1) ~ "Education (Okbay 2022, Meta)",
+      grepl("NealeEduFemale", df$p1) ~ "Education (Female, Neale 2018)",
+      grepl("NealeEduMale", df$p1) ~ "Education (Male, Neale 2018)",
+      grepl("NealeEdu2018", df$p1) ~ "Education (All, Neale 2018)",
+      TRUE ~ df$p1
+    ),
+    p2_label = case_when(
+      grepl("Belloy2024FinnGenfemales", df$p2) ~ "AD (Female, Belloy 2024)",
+      grepl("Belloy2024FinnGenmales", df$p2) ~ "AD (Male, Belloy 2024)",
+      grepl("Belloy2024FinnGensexhet", df$p2) ~ "AD (Combined, Belloy 2024)",
+      grepl("NealeEduMale", df$p2) ~ "Education (Male, Neale 2018)",
+      grepl("NealeEduFemale", df$p2) ~ "Education (Female, Neale 2018)",
+      TRUE ~ df$p2
+    )
+  )
+# ---- Add group labels for clarity ----
+df <- df %>%
+  mutate(
+    group = case_when(
+      grepl("Okbay", p1) ~ "Meta-Education vs AD",
+      grepl("NealeEdu2018", p1) ~ "Neale (All) vs AD",
+      grepl("NealeEduMale|NealeEduFemale", p1) & grepl("Belloy", p2) ~ "Sex-stratified Education vs AD",
+      grepl("NealeEduMale|NealeEduFemale", p1) & grepl("NealeEdu", p2) ~ "Sex-stratified Education vs Education",
+      TRUE ~ "Other"
+    )
+  )
+
+# ---- Create pair label ----
+df <- df %>% mutate(pair = paste(p1_label, "→", p2_label))
+
+# ---- Filter to only meaningful categories ----
+df <- df %>%
+  filter(group %in% c("Meta-Education vs AD", "Neale (All) vs AD", 
+                      "Sex-stratified Education vs AD", "Sex-stratified Education vs Education"))
+
+# ---- Add significance and order ----
+df <- df %>%
+  mutate(sig = ifelse(p < 0.05, "Significant", "Not significant")) %>%
+  arrange(group, rg)
+
+df$pair <- factor(df$pair, levels = unique(df$pair))
+
+# ---- Plot ----
+p <- ggplot(df, aes(x = rg, y = pair, color = sig)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(y = pair, xmin = rg - se, xmax = rg + se),
+                width = 0.2, orientation = "y") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_text_repel(aes(label = paste0("p=", signif(p, 2))), size = 3, nudge_x = 0.1) +
+  facet_grid(group ~ ., scales = "free_y", space = "free_y") +
+  scale_color_manual(values = c("Significant" = "#0072B2", "Not significant" = "gray70")) +
+  theme_minimal(base_size = 13) +
+  labs(
+    x = "Genetic correlation (rg)",
+    y = "",
+    title = "LDSC Genetic Correlations Between Education and Alzheimer's Disease",
+    subtitle = "Overall and sex-stratified analyses across Okbay and Neale education GWAS",
+    color = "Significance (p < 0.05)"
+  ) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    strip.text.y = element_text(face = "bold")
+  )
+
+ggsave("LDSC_combined_facet_plot.png", p, width = 11, height = 7, dpi = 300)
+```

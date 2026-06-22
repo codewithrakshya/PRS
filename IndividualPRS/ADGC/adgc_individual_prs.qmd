@@ -1,0 +1,793 @@
+---
+title: "adgc_individual_prs_results"
+format: html
+---
+
+## Purpose
+
+This QMD regenerates the ADGC individual PRS result RDS using the ADGC analytic dataset created by the composite PRS pipeline. It compares regenerated values against the existing RDS before overwriting. It also creates a clean CSV/XLSX table with odds ratios, p-values, FDR, and pseudo-R2.
+
+```{r setup}
+.libPaths("/wynton/home/andrews/rakshyasharma/R/rocky8-x86_64-pc-linux-gnu-library/4.4-CBI-gcc13/")
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(tibble)
+library(openxlsx)
+
+options(dplyr.summarise.inform = FALSE)
+
+# =========================================================
+# Safety switch
+# =========================================================
+# FALSE = compare only; do not overwrite existing RDS
+# TRUE  = overwrite existing RDS after comparison
+overwrite_existing <- FALSE
+
+# =========================================================
+# Paths
+# =========================================================
+composite_rds_dir <- "/wynton/group/andrews/users/rakshyasharma/PRS/compositePRS/results/rds"
+
+individual_rds_dir <- "/wynton/group/andrews/users/rakshyasharma/PRS/IndividualPRS/ADGC/results/rds"
+
+dir.create(individual_rds_dir, recursive = TRUE, showWarnings = FALSE)
+
+adgc_df_file <- file.path(
+  composite_rds_dir,
+  "adgc_df_prs.rds"
+)
+
+existing_results_file <- file.path(
+  individual_rds_dir,
+  "adgc_individual_prs_results.rds"
+)
+
+baseline_cohort_file <- file.path(
+  individual_rds_dir,
+  "adgc_individual_prs_baseline_cohort.rds"
+)
+
+comparison_file <- file.path(
+  individual_rds_dir,
+  "adgc_individual_prs_results_comparison_existing_vs_regenerated.csv"
+)
+
+regenerated_preview_file <- file.path(
+  individual_rds_dir,
+  "adgc_individual_prs_results_REGENERATED_PREVIEW.rds"
+)
+
+final_table_xlsx_file <- file.path(
+  individual_rds_dir,
+  "adgc_individual_prs_results_table.xlsx"
+)
+
+final_table_csv_file <- file.path(
+  individual_rds_dir,
+  "adgc_individual_prs_results_table.csv"
+)
+
+if (!file.exists(adgc_df_file)) {
+  stop("Missing input file: ", adgc_df_file)
+}
+
+cat("ADGC analytic input:", adgc_df_file, "\n")
+cat("Existing individual PRS RDS:", existing_results_file, "\n")
+cat("Overwrite existing:", overwrite_existing, "\n")
+
+# =========================================================
+# Trait labels and PRS map
+# =========================================================
+trait_labels <- c(
+  "Graham2021tc_eur" = "Total Cholesterol",
+  "Graham2021TG_eur" = "Triglycerides",
+  "Graham2021HDL_eur" = "HDL Cholesterol",
+  "Graham2021LDL_eur" = "LDL Cholesterol",
+  "Keaton2024diaBP" = "Diastolic Blood Pressure",
+  "Keaton2024PP" = "Pulse Pressure",
+  "Keaton2024sysBP" = "Systolic Blood Pressure",
+  "Okbay2022educ" = "Education",
+  "SaundersDrnkwk" = "Alcohol Consumption (weekly)",
+  "SaundersSmkInt" = "Smoking Initiation",
+  "SuzukiDia2024" = "Type 2 Diabetes",
+  "YengoBMI2018" = "BMI",
+  "Socrates2024" = "Social Isolation",
+  "Trpchevska2022" = "Hearing Loss",
+  "Choquet2021" = "Vision Loss",
+  "Klimentidis2018mvpa" = "Physical Activity",
+  "Adams2025mdd" = "Major Depression"
+)
+
+prs_map <- tibble::tribble(
+  ~folder, ~prs_var,
+  "Graham2021tc_eur", "total_cholesterol_score",
+  "Graham2021TG_eur", "Triglycerides_score",
+  "Graham2021HDL_eur", "HDL_Cholesterol_score",
+  "Graham2021LDL_eur", "LDL_Cholesterol_score",
+  "Keaton2024diaBP", "diastolic_blood_pressure_score",
+  "Keaton2024PP", "pulse_pressure_score",
+  "Keaton2024sysBP", "systolic_blood_pressure_score",
+  "Okbay2022educ", "education_score",
+  "SaundersDrnkwk", "alcohol_drinking_weekly_score",
+  "SaundersSmkInt", "smoking_initiation_score",
+  "SuzukiDia2024", "diabetes_score",
+  "YengoBMI2018", "bmi_score",
+  "Socrates2024", "social_isolation_score",
+  "Trpchevska2022", "Hearing_Loss_score",
+  "Choquet2021", "Vision_Loss_score",
+  "Klimentidis2018mvpa", "Physical_Activity_score",
+  "Adams2025mdd", "Major_Depressive_Disorder_score"
+)
+
+print(prs_map)
+
+# =========================================================
+# Load ADGC analytic dataset
+# =========================================================
+adgc_df_prs <- readRDS(adgc_df_file)
+
+required_cols <- c(
+  "ID_2",
+  "status_binary",
+  "status",
+  "aaoaae",
+  "apoe4any",
+  "Sex",
+  "PC1", "PC2", "PC3", "PC4",
+  prs_map$prs_var
+)
+
+missing_cols <- setdiff(required_cols, names(adgc_df_prs))
+
+if (length(missing_cols) > 0) {
+  stop(
+    paste(
+      "adgc_df_prs is missing required columns:",
+      paste(missing_cols, collapse = ", ")
+    )
+  )
+}
+
+adgc_df_prs <- adgc_df_prs %>%
+  mutate(
+    sex_covariate = if ("sex" %in% names(adgc_df_prs)) {
+      as.numeric(.data[["sex"]])
+    } else {
+      as.numeric(Sex)
+    },
+    status_binary = as.numeric(as.character(status_binary)),
+    Sex = as.numeric(Sex),
+    aaoaae = as.numeric(aaoaae),
+    apoe4any = as.numeric(apoe4any),
+    PC1 = as.numeric(PC1),
+    PC2 = as.numeric(PC2),
+    PC3 = as.numeric(PC3),
+    PC4 = as.numeric(PC4)
+  )
+
+baseline_cohort <- adgc_df_prs %>%
+  filter(
+    status %in% c(1, 2),
+    !is.na(status_binary),
+    !is.na(aaoaae),
+    !is.na(apoe4any),
+    !is.na(Sex),
+    !is.na(sex_covariate),
+    !is.na(PC1),
+    !is.na(PC2),
+    !is.na(PC3),
+    !is.na(PC4)
+  )
+
+cat("Rows in baseline cohort:", nrow(baseline_cohort), "\n")
+cat("Columns in baseline cohort:", ncol(baseline_cohort), "\n")
+
+cat("Status counts:\n")
+print(table(baseline_cohort$status_binary, useNA = "ifany"))
+
+cat("Sex counts:\n")
+print(table(baseline_cohort$Sex, useNA = "ifany"))
+
+# =========================================================
+# Helper function for individual PRS logistic regression
+# =========================================================
+fit_adgc_individual_prs <- function(data, folder, prs_var, sex_strata = "Total") {
+
+  empty_result <- tibble(
+    term = "Z_norm2",
+    estimate = NA_real_,
+    std.error = NA_real_,
+    statistic = NA_real_,
+    p.value = NA_real_,
+    conf.low = NA_real_,
+    conf.high = NA_real_,
+    estimate_or = NA_real_,
+    conf.low_or = NA_real_,
+    conf.high_or = NA_real_,
+    mcfadden_pseudo_r2 = NA_real_,
+    covariate_mcfadden_pseudo_r2 = NA_real_,
+    delta_mcfadden_pseudo_r2 = NA_real_,
+    n_model = NA_integer_,
+    n_case = NA_integer_,
+    n_control = NA_integer_,
+    folder = folder,
+    sex_strata = sex_strata
+  )
+
+  if (sex_strata == "Total") {
+
+    model_df <- data %>%
+      filter(!is.na(.data[[prs_var]])) %>%
+      mutate(Z_norm2 = as.numeric(.data[[prs_var]]))
+
+    full_form <- stats::as.formula(
+      "status_binary ~ Z_norm2 + aaoaae + apoe4any + sex_covariate + PC1 + PC2 + PC3 + PC4"
+    )
+
+    covariate_form <- stats::as.formula(
+      "status_binary ~ aaoaae + apoe4any + sex_covariate + PC1 + PC2 + PC3 + PC4"
+    )
+
+  } else if (sex_strata == "Female") {
+
+    model_df <- data %>%
+      filter(Sex == 2, !is.na(.data[[prs_var]])) %>%
+      mutate(Z_norm2 = as.numeric(.data[[prs_var]]))
+
+    full_form <- stats::as.formula(
+      "status_binary ~ Z_norm2 + aaoaae + apoe4any + PC1 + PC2 + PC3 + PC4"
+    )
+
+    covariate_form <- stats::as.formula(
+      "status_binary ~ aaoaae + apoe4any + PC1 + PC2 + PC3 + PC4"
+    )
+
+  } else if (sex_strata == "Male") {
+
+    model_df <- data %>%
+      filter(Sex == 1, !is.na(.data[[prs_var]])) %>%
+      mutate(Z_norm2 = as.numeric(.data[[prs_var]]))
+
+    full_form <- stats::as.formula(
+      "status_binary ~ Z_norm2 + aaoaae + apoe4any + PC1 + PC2 + PC3 + PC4"
+    )
+
+    covariate_form <- stats::as.formula(
+      "status_binary ~ aaoaae + apoe4any + PC1 + PC2 + PC3 + PC4"
+    )
+
+  } else {
+    stop("sex_strata must be one of: Total, Female, Male")
+  }
+
+  model_df <- model_df %>%
+    filter(
+      !is.na(status_binary),
+      !is.na(aaoaae),
+      !is.na(apoe4any),
+      !is.na(PC1),
+      !is.na(PC2),
+      !is.na(PC3),
+      !is.na(PC4),
+      !is.na(Z_norm2)
+    )
+
+  if (sex_strata == "Total") {
+    model_df <- model_df %>%
+      filter(!is.na(sex_covariate))
+  }
+
+  if (nrow(model_df) == 0) {
+    return(empty_result)
+  }
+
+  if (length(unique(model_df$status_binary[!is.na(model_df$status_binary)])) < 2) {
+    return(empty_result)
+  }
+
+  n_model <- nrow(model_df)
+  n_case <- sum(model_df$status_binary == 1, na.rm = TRUE)
+  n_control <- sum(model_df$status_binary == 0, na.rm = TRUE)
+
+  full_fit <- tryCatch(
+    glm(full_form, data = model_df, family = binomial()),
+    error = function(e) NULL
+  )
+
+  covariate_fit <- tryCatch(
+    glm(covariate_form, data = model_df, family = binomial()),
+    error = function(e) NULL
+  )
+
+  null_fit <- tryCatch(
+    glm(status_binary ~ 1, data = model_df, family = binomial()),
+    error = function(e) NULL
+  )
+
+  if (is.null(full_fit) || is.null(covariate_fit) || is.null(null_fit)) {
+    return(empty_result)
+  }
+
+  coef_tab <- summary(full_fit)$coefficients
+
+  if (!("Z_norm2" %in% rownames(coef_tab))) {
+    return(empty_result)
+  }
+
+  loglik_full <- as.numeric(logLik(full_fit))
+  loglik_covariate <- as.numeric(logLik(covariate_fit))
+  loglik_null <- as.numeric(logLik(null_fit))
+
+  mcfadden_pseudo_r2 <- 1 - (loglik_full / loglik_null)
+
+  covariate_mcfadden_pseudo_r2 <- 1 - (loglik_covariate / loglik_null)
+
+  delta_mcfadden_pseudo_r2 <- mcfadden_pseudo_r2 - covariate_mcfadden_pseudo_r2
+
+  zval <- qnorm(0.975)
+
+  beta <- coef_tab["Z_norm2", "Estimate"]
+  se <- coef_tab["Z_norm2", "Std. Error"]
+
+  tibble(
+    term = "Z_norm2",
+    estimate = beta,
+    std.error = se,
+    statistic = coef_tab["Z_norm2", "z value"],
+    p.value = coef_tab["Z_norm2", "Pr(>|z|)"],
+    conf.low = beta - zval * se,
+    conf.high = beta + zval * se,
+    estimate_or = exp(beta),
+    conf.low_or = exp(beta - zval * se),
+    conf.high_or = exp(beta + zval * se),
+    mcfadden_pseudo_r2 = mcfadden_pseudo_r2,
+    covariate_mcfadden_pseudo_r2 = covariate_mcfadden_pseudo_r2,
+    delta_mcfadden_pseudo_r2 = delta_mcfadden_pseudo_r2,
+    n_model = n_model,
+    n_case = n_case,
+    n_control = n_control,
+    folder = folder,
+    sex_strata = sex_strata
+  )
+}
+
+# =========================================================
+# Run individual PRS models
+# =========================================================
+all_results_regenerated <- purrr::pmap_dfr(
+  prs_map,
+  function(folder, prs_var) {
+    bind_rows(
+      fit_adgc_individual_prs(baseline_cohort, folder, prs_var, "Total"),
+      fit_adgc_individual_prs(baseline_cohort, folder, prs_var, "Female"),
+      fit_adgc_individual_prs(baseline_cohort, folder, prs_var, "Male")
+    )
+  }
+) %>%
+  group_by(sex_strata) %>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup() %>%
+  select(
+    term,
+    estimate,
+    std.error,
+    statistic,
+    p.value,
+    conf.low,
+    conf.high,
+    estimate_or,
+    conf.low_or,
+    conf.high_or,
+    mcfadden_pseudo_r2,
+    covariate_mcfadden_pseudo_r2,
+    delta_mcfadden_pseudo_r2,
+    n_model,
+    n_case,
+    n_control,
+    folder,
+    sex_strata,
+    p_adj_fdr
+  )
+
+stopifnot(nrow(all_results_regenerated) == 51)
+stopifnot(setequal(unique(all_results_regenerated$sex_strata), c("Total", "Female", "Male")))
+stopifnot(all(prs_map$folder %in% all_results_regenerated$folder))
+
+cat("Regenerated individual PRS result rows:", nrow(all_results_regenerated), "\n")
+cat("Regenerated individual PRS result columns:", ncol(all_results_regenerated), "\n")
+
+all_results_regenerated %>%
+  count(folder, sex_strata) %>%
+  print(n = Inf)
+
+# Always save a preview file without touching the real result RDS
+saveRDS(all_results_regenerated, regenerated_preview_file)
+cat("Saved regenerated preview RDS:", regenerated_preview_file, "\n")
+
+# =========================================================
+# Create clean publication-style table
+# =========================================================
+
+format_p_value <- function(x) {
+  ifelse(
+    is.na(x),
+    NA_character_,
+    ifelse(
+      x < 0.001,
+      formatC(x, format = "e", digits = 2),
+      formatC(x, format = "f", digits = 3)
+    )
+  )
+}
+
+add_sig_stars <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01 ~ "**",
+    p < 0.05 ~ "*",
+    TRUE ~ ""
+  )
+}
+
+format_p_value_with_stars <- function(p) {
+  paste0(format_p_value(p), add_sig_stars(p))
+}
+
+
+
+final_results_table <- all_results_regenerated %>%
+  mutate(
+    Trait = recode(folder, !!!trait_labels),
+
+    `Odds Ratio (95% CI)` = paste0(
+      formatC(estimate_or, format = "f", digits = 3),
+      " (",
+      formatC(conf.low_or, format = "f", digits = 3),
+      "\u2013",
+      formatC(conf.high_or, format = "f", digits = 3),
+      ")"
+    ),
+
+    `P Value` = format_p_value_with_stars(p.value),
+    FDR = format_p_value_with_stars(p_adj_fdr),
+
+ #   `Delta Pseudo R2` = format_r2(delta_mcfadden_pseudo_r2),
+
+    significant_p = !is.na(p.value) & p.value < 0.05,
+    significant_fdr = !is.na(p_adj_fdr) & p_adj_fdr < 0.05
+  ) %>%
+  select(
+    Trait,
+    sex_strata,
+    `Odds Ratio (95% CI)`,
+    `P Value`,
+    FDR,
+   # `Delta Pseudo R2`,
+    significant_p,
+    significant_fdr
+  ) %>%
+  arrange(
+    Trait,
+    factor(sex_strata, levels = c("Female", "Male", "Total"))
+  )
+
+# Save plain CSV version
+readr::write_csv(
+  final_results_table %>%
+    select(
+      -significant_p,
+      -significant_fdr
+    ),
+  final_table_csv_file
+)
+
+cat("Final table CSV written to:", final_table_csv_file, "\n")
+
+# =========================================================
+# Create formatted XLSX table
+# =========================================================
+
+wb <- createWorkbook()
+
+addWorksheet(wb, "ADGC Individual PRS")
+
+excel_table <- final_results_table %>%
+  select(
+    -significant_p,
+    -significant_fdr
+  )
+
+writeData(
+  wb,
+  sheet = "ADGC Individual PRS",
+  x = excel_table,
+  startRow = 1,
+  startCol = 1,
+  withFilter = TRUE
+)
+
+header_style <- createStyle(
+  textDecoration = "bold",
+  halign = "center",
+  border = "Bottom"
+)
+
+bold_style <- createStyle(
+  textDecoration = "bold"
+)
+
+addStyle(
+  wb,
+  sheet = "ADGC Individual PRS",
+  style = header_style,
+  rows = 1,
+  cols = 1:ncol(excel_table),
+  gridExpand = TRUE
+)
+
+# Data rows start at Excel row 2
+p_sig_rows <- which(final_results_table$significant_p) + 1
+fdr_sig_rows <- which(final_results_table$significant_fdr) + 1
+
+# Column numbers
+or_col <- which(names(excel_table) == "Odds Ratio (95% CI)")
+p_col <- which(names(excel_table) == "P Value")
+fdr_col <- which(names(excel_table) == "FDR")
+
+
+# Bold OR and raw P-value if raw P < 0.05
+if (length(p_sig_rows) > 0) {
+  addStyle(
+    wb,
+    sheet = "ADGC Individual PRS",
+    style = bold_style,
+    rows = p_sig_rows,
+    cols = c(or_col, p_col),
+    gridExpand = TRUE,
+    stack = TRUE
+  )
+}
+
+# Bold FDR if FDR < 0.05
+if (length(fdr_sig_rows) > 0) {
+  addStyle(
+    wb,
+    sheet = "ADGC Individual PRS",
+    style = bold_style,
+    rows = fdr_sig_rows,
+    cols = fdr_col,
+    gridExpand = TRUE,
+    stack = TRUE
+  )
+}
+
+
+
+setColWidths(
+  wb,
+  sheet = "ADGC Individual PRS",
+  cols = 1:ncol(excel_table),
+  widths = "auto"
+)
+
+freezePane(
+  wb,
+  sheet = "ADGC Individual PRS",
+  firstActiveRow = 2
+)
+
+saveWorkbook(
+  wb,
+  final_table_xlsx_file,
+  overwrite = TRUE
+)
+
+cat("Final table XLSX written to:", final_table_xlsx_file, "\n")
+
+# =========================================================
+# Compare existing RDS vs regenerated RDS
+# =========================================================
+if (file.exists(existing_results_file)) {
+
+  existing_all_results <- readRDS(existing_results_file)
+
+  required_result_cols <- c(
+    "term",
+    "estimate",
+    "std.error",
+    "statistic",
+    "p.value",
+    "conf.low",
+    "conf.high",
+    "estimate_or",
+    "conf.low_or",
+    "conf.high_or",
+    "mcfadden_pseudo_r2",
+    "covariate_mcfadden_pseudo_r2",
+    "delta_mcfadden_pseudo_r2",
+    "n_model",
+    "n_case",
+    "n_control",
+    "folder",
+    "sex_strata",
+    "p_adj_fdr"
+  )
+
+  missing_existing_cols <- setdiff(required_result_cols, names(existing_all_results))
+  missing_regenerated_cols <- setdiff(required_result_cols, names(all_results_regenerated))
+
+  if (length(missing_existing_cols) > 0) {
+    cat(
+      "Existing RDS is missing these columns, likely because it was created before pseudo-R2 was added:\n",
+      paste(missing_existing_cols, collapse = ", "),
+      "\n"
+    )
+    cat("Skipping strict comparison against old RDS.\n")
+    values_match <- NA
+  } else if (length(missing_regenerated_cols) > 0) {
+    stop(
+      paste(
+        "Regenerated RDS is missing required columns:",
+        paste(missing_regenerated_cols, collapse = ", ")
+      )
+    )
+  } else {
+
+    existing_compare <- existing_all_results %>%
+      select(all_of(required_result_cols)) %>%
+      arrange(folder, sex_strata, term)
+
+    regenerated_compare <- all_results_regenerated %>%
+      select(all_of(required_result_cols)) %>%
+      arrange(folder, sex_strata, term)
+
+    same_dimensions <- identical(dim(existing_compare), dim(regenerated_compare))
+
+    same_keys <- identical(
+      existing_compare %>% select(folder, sex_strata, term),
+      regenerated_compare %>% select(folder, sex_strata, term)
+    )
+
+    cat("Same dimensions:", same_dimensions, "\n")
+    cat("Same folder/sex_strata/term keys:", same_keys, "\n")
+
+    comparison_df <- existing_compare %>%
+      rename_with(
+        ~ paste0(.x, "_existing"),
+        .cols = -c(folder, sex_strata, term)
+      ) %>%
+      left_join(
+        regenerated_compare %>%
+          rename_with(
+            ~ paste0(.x, "_regenerated"),
+            .cols = -c(folder, sex_strata, term)
+          ),
+        by = c("folder", "sex_strata", "term")
+      ) %>%
+      mutate(
+        estimate_diff = estimate_regenerated - estimate_existing,
+        std_error_diff = std.error_regenerated - std.error_existing,
+        statistic_diff = statistic_regenerated - statistic_existing,
+        p_value_diff = p.value_regenerated - p.value_existing,
+        conf_low_diff = conf.low_regenerated - conf.low_existing,
+        conf_high_diff = conf.high_regenerated - conf.high_existing,
+        estimate_or_diff = estimate_or_regenerated - estimate_or_existing,
+        conf_low_or_diff = conf.low_or_regenerated - conf.low_or_existing,
+        conf_high_or_diff = conf.high_or_regenerated - conf.high_or_existing,
+        mcfadden_pseudo_r2_diff = mcfadden_pseudo_r2_regenerated - mcfadden_pseudo_r2_existing,
+        covariate_mcfadden_pseudo_r2_diff = covariate_mcfadden_pseudo_r2_regenerated - covariate_mcfadden_pseudo_r2_existing,
+        delta_mcfadden_pseudo_r2_diff = delta_mcfadden_pseudo_r2_regenerated - delta_mcfadden_pseudo_r2_existing,
+        n_model_diff = n_model_regenerated - n_model_existing,
+        n_case_diff = n_case_regenerated - n_case_existing,
+        n_control_diff = n_control_regenerated - n_control_existing,
+        p_adj_fdr_diff = p_adj_fdr_regenerated - p_adj_fdr_existing,
+
+        max_abs_numeric_diff = pmax(
+          abs(estimate_diff),
+          abs(std_error_diff),
+          abs(statistic_diff),
+          abs(p_value_diff),
+          abs(conf_low_diff),
+          abs(conf_high_diff),
+          abs(estimate_or_diff),
+          abs(conf_low_or_diff),
+          abs(conf_high_or_diff),
+          abs(mcfadden_pseudo_r2_diff),
+          abs(covariate_mcfadden_pseudo_r2_diff),
+          abs(delta_mcfadden_pseudo_r2_diff),
+          abs(n_model_diff),
+          abs(n_case_diff),
+          abs(n_control_diff),
+          abs(p_adj_fdr_diff),
+          na.rm = TRUE
+        )
+      ) %>%
+      arrange(desc(max_abs_numeric_diff))
+
+    readr::write_csv(comparison_df, comparison_file)
+
+    cat("Comparison CSV written to:", comparison_file, "\n")
+    cat("Top 20 differences:\n")
+
+    comparison_df %>%
+      select(
+        folder,
+        sex_strata,
+        estimate_existing,
+        estimate_regenerated,
+        estimate_diff,
+        estimate_or_existing,
+        estimate_or_regenerated,
+        estimate_or_diff,
+        p.value_existing,
+        p.value_regenerated,
+        p_value_diff,
+        p_adj_fdr_existing,
+        p_adj_fdr_regenerated,
+        p_adj_fdr_diff,
+        mcfadden_pseudo_r2_existing,
+        mcfadden_pseudo_r2_regenerated,
+        mcfadden_pseudo_r2_diff,
+        delta_mcfadden_pseudo_r2_existing,
+        delta_mcfadden_pseudo_r2_regenerated,
+        delta_mcfadden_pseudo_r2_diff,
+        max_abs_numeric_diff
+      ) %>%
+      slice_head(n = 20) %>%
+      print(n = 20)
+
+    numeric_tolerance <- 1e-8
+
+    values_match <- all(
+      comparison_df$max_abs_numeric_diff < numeric_tolerance |
+        is.na(comparison_df$max_abs_numeric_diff)
+    )
+
+    cat("Values match within tolerance", numeric_tolerance, ":", values_match, "\n")
+  }
+
+} else {
+  cat("No existing RDS found. No comparison performed.\n")
+  values_match <- NA
+}
+
+# =========================================================
+# Stop before overwrite if safety switch is FALSE
+# =========================================================
+if (!overwrite_existing) {
+  cat("\nOverwrite is FALSE.\n")
+  cat("Existing RDS was NOT overwritten.\n")
+  cat("Review comparison file first:\n")
+  cat(comparison_file, "\n")
+  cat("Preview regenerated RDS is saved here:\n")
+  cat(regenerated_preview_file, "\n")
+  cat("Final CSV table is saved here:\n")
+  cat(final_table_csv_file, "\n")
+  cat("Final XLSX table is saved here:\n")
+  cat(final_table_xlsx_file, "\n")
+  cat("Set overwrite_existing <- TRUE only after review.\n")
+  knitr::knit_exit()
+}
+
+# =========================================================
+# Save final RDS outputs
+# =========================================================
+saveRDS(
+  baseline_cohort,
+  baseline_cohort_file
+)
+
+saveRDS(
+  all_results_regenerated,
+  existing_results_file
+)
+
+cat("Overwrote baseline cohort RDS:", baseline_cohort_file, "\n")
+cat("Overwrote ADGC individual PRS results RDS:", existing_results_file, "\n")
+cat("Final CSV table:", final_table_csv_file, "\n")
+cat("Final XLSX table:", final_table_xlsx_file, "\n")
+```

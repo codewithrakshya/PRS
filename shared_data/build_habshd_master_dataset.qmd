@@ -1,0 +1,100 @@
+---
+title: "build_habshd_master_dataset"
+format: html
+---
+
+This (/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds) becomes the main input for habshd_individual_prs.qmd and HABS-HD PRS phenotype validation.qmd
+
+Input files
+   |
+   |-- .fam sample file
+   |-- population similarity file
+   |-- clinical CSV
+   |-- genomics CSV
+   |-- medication CSV
+   |-- PRS score folders
+   |-- biomarker RDS
+   |
+   v
+source("habshd_master_data.R")
+   |
+   v
+build_habshd_master_dataset(...)
+   |
+   v
+habshd_master_df
+   |
+   v
+saveRDS(...)
+   |
+   v
+/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds
+
+```{r}
+.libPaths("/wynton/home/andrews/rakshyasharma/R/rocky8-x86_64-pc-linux-gnu-library/4.4-CBI-gcc13/")
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(data.table)
+library(readxl)
+library(stringr)
+
+source("habshd_master_data.R")
+
+fam_file <- "/wynton/group/andrews/users/rakshyasharma/PRS/PRS-CS-Auto/resources/HABSHD/HABSHD_snp_subset.fam"
+pop_file <- "/wynton/group/andrews/users/rakshyasharma/pgsc_calc/habshd/results/0ld_results/Bellenguez2022load_06_25/habshd/score/habshd_popsimilarity.txt.gz"
+clinical_file <- "/wynton/group/andrews/users/rakshyasharma/regression/RP_HD_7_Clinical.csv"
+genomics_file <- "/wynton/group/andrews/users/rakshyasharma/regression/RP_HD_7_Genomics.csv"
+meds_file <- "/wynton/group/andrews/users/rakshyasharma/regression/processed_meds_data.csv"
+base_dir <- "/wynton/group/andrews/users/rakshyasharma/pgsc_calc/habshd/results/HABSHD"
+biomarker_file <- "/wynton/group/andrews/users/rakshyasharma/pgsc_calc/habshd/workflow/scripts/habshd_all_merged.rds"
+
+trait_folders <- c(
+  "Graham2021tc_eur","Keaton2024diaBP","Keaton2024PP","Keaton2024sysBP",
+  "Okbay2022educ","SaundersDrnkwk","SaundersSmkInt","SuzukiDia2024",
+  "YengoBMI2018","Socrates2024","Trpchevska2022","Choquet2021",
+  "Graham2021TG_eur","Graham2021HDL_eur","Graham2021LDL_eur",
+  "Klimentidis2018mvpa","Adams2025mdd"
+)
+
+trait_labels <- c(
+  "YengoBMI2018" = "bmi",
+  "Okbay2022educ" = "education",
+  "SaundersDrnkwk" = "alcohol_drinking_weekly",
+  "SaundersSmkInt" = "smoking_initiation",
+  "SuzukiDia2024" = "diabetes",
+  "Keaton2024diaBP" = "diastolic_blood_pressure",
+  "Keaton2024sysBP" = "systolic_blood_pressure",
+  "Keaton2024PP" = "pulse_pressure",
+  "Graham2021tc_eur" = "total_cholesterol",
+  "Socrates2024" = "social_isolation",
+  "Trpchevska2022" = "Hearing_Loss",
+  "Choquet2021" = "Vision_Loss",
+  "Graham2021TG_eur" = "Triglycerides",
+  "Graham2021HDL_eur" = "HDL_Cholesterol",
+  "Graham2021LDL_eur" = "LDL_Cholesterol",
+  "Klimentidis2018mvpa" = "Physical_Activity",
+  "Adams2025mdd" = "Major_Depressive_Disorder"
+)
+
+habshd_master_df <- build_habshd_master_dataset(
+  fam_file = fam_file,
+  pop_file = pop_file,
+  clinical_file = clinical_file,
+  genomics_file = genomics_file,
+  meds_file = meds_file,
+  base_dir = base_dir,
+  trait_folders = trait_folders,
+  trait_labels = trait_labels,
+  biomarker_file = biomarker_file
+)
+
+saveRDS(
+  habshd_master_df,
+  "/wynton/group/andrews/users/rakshyasharma/PRS/shared_data/habshd_master_df.rds"
+)
+
+cat("Saved rows:", nrow(habshd_master_df), "\n")
+cat("Saved cols:", ncol(habshd_master_df), "\n")

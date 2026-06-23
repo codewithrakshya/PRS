@@ -1,39 +1,48 @@
-# R session files
-.RData
-.Rhistory
-.Rproj.user/
+# Snakemake and pipeline generated content anywhere
+**/.snakemake/
+**/resources/
+**/results/
+**/data/
+**/logs/
+**/benchmark/
+**/benchmarks/
 
-# Logs
-logs/
-*.log
-*.out
-*.err
-
-# Generated outputs
-results/
-output/
-outputs/
-tmp/
-temp/
-.cache/
-
-# Large/private genomic files
-*.bed
-*.bim
-*.fam
-*.pgen
-*.pvar
-*.psam
-*.bgen
-*.sample
-*.vcf
-*.vcf.gz
-*.tsv.gz
-*.txt.gz
-*.sumstats.gz
+# Large pipeline files
+*.gz
+*.zip
+*.tar
+*.tar.gz
 *.rds
 *.RDS
+*.sqlite
+*.db
 
-# Existing separate repos
+# Keep original lab repos separate
 MR/
 PRS-CS-Auto/
+
+# R session/history files anywhere
+.RData
+.Rhistory
+**/.RData
+**/.Rhistory
+.Rproj.user/
+
+# Generated plots/reports that should not be committed unless intentionally selected
+**/Rplots.pdf
+
+# Credentials / auth tokens
+**/.httr-oauth
+
+# MR/PRS workflow output artifacts
+**/*_Fstats.csv
+**/MR_power.tsv
+**/HarmonizedMRdat.csv
+**/StudyCharacteristics.csv
+**/mrpresso_global.txt
+
+# Do not commit external tool checkouts/symlinks inside workflows
+**/workflow/src/
+
+# Mac/resource fork junk
+**/._*
